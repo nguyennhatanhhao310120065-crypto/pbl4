@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mô phỏng cân bằng tải</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+</head>
+<body>
+
+<header class="page-header">
+  <h1>Mô phỏng cân bằng tải (Load Balancing Simulation)</h1>
+  <p>So sánh Round Robin, Least Connections, IP Hash và Least Response Time trên cùng một bộ request.</p>
+</header>
+
+<main>
+
+  <!-- 1. Thiết lập -->
+  <section class="card" id="settings">
+    <h2>Thiết lập (Settings)</h2>
+    <p class="hint">Chỉnh tham số rồi bấm Chạy mô phỏng.</p>
+
+    <div class="presets">
+      <span class="label">Mẫu có sẵn (Preset):</span>
+      <button type="button" class="btn-ghost" data-preset="default">Theo đề bài</button>
+      <button type="button" class="btn-ghost" data-preset="uniform" title="0% request nặng, không server yếu, 0% sticky">Hệ thống đồng nhất</button>
+      <button type="button" class="btn-ghost" data-preset="sticky">Sticky client nặng</button>
+    </div>
+
+    <form id="param-form" autocomplete="off">
+      <fieldset>
+        <legend>Request</legend>
+        <label>Số request (Requests)
+          <input type="number" name="num_requests" min="1" max="5000" step="1">
+        </label>
+        <label>% request nặng (Heavy %)
+          <input type="number" name="heavy_percent" min="0" max="100" step="1">
+        </label>
+        <label>Nhẹ min / max (ms)
+          <span class="pair">
+            <input type="number" name="light_min" min="0.1" step="0.1" title="Thời gian xử lý request nhẹ, phân phối đều trong khoảng này.">
+            <input type="number" name="light_max" min="0.1" step="0.1">
+          </span>
+        </label>
+        <label>Nặng min / max (ms)
+          <span class="pair">
+            <input type="number" name="heavy_min" min="0.1" step="0.1" title="Thời gian xử lý request nặng, phân phối đều trong khoảng này.">
+            <input type="number" name="heavy_max" min="0.1" step="0.1">
+          </span>
+        </label>
+        <label>Tốc độ đến (req/s)
+          <input type="number" name="arrival_rate" min="1" step="1" title="Trung bình số request mỗi giây, khoảng cách giữa 2 request theo phân phối mũ.">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Server</legend>
+        <label>Số server (Servers)
+          <input type="number" name="num_servers" min="2" max="6" step="1">
+        </label>
+        <label>Số server yếu (Slow servers)
+          <input type="number" name="num_slow_servers" min="0" max="5" step="1" title="Server yếu được lấy từ cuối lên: 1 là s3, 2 là s3 và s2.">
+        </label>
+        <label>Hệ số chậm (Slow factor)
+          <input type="number" name="slow_factor" min="1" max="20" step="0.1" title="Server yếu xử lý mỗi request lâu gấp số lần này.">
+        </label>
+        <label>Ngưỡng quá tải (Overload)
+          <input type="number" name="overload_threshold" min="1" step="1" title="Server bị coi là quá tải khi số kết nối mở lớn hơn hoặc bằng ngưỡng này.">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Client</legend>
+        <label>% sticky client
+          <input type="number" name="sticky_percent" min="0" max="100" step="1" title="Phần trăm request đến từ cùng một IP cố định.">
+        </label>
+        <label>IP sticky client
+          <input type="text" name="sticky_ip">
+        </label>
+        <label>Số client khác (Clients)
+          <input type="number" name="num_clients" min="1" max="250" step="1">
+        </label>
+        <label>Seed
+          <input type="number" name="seed" min="0" step="1" title="Cùng seed thì bộ request và kết quả giống hệt nhau.">
+        </label>
+      </fieldset>
+    </form>
+
+    <div class="actions">
+      <button type="button" id="btn-run" class="btn-primary">Chạy mô phỏng (Run)</button>
+      <button type="button" id="btn-defaults" class="btn-ghost">Khôi phục mặc định (Reset defaults)</button>
+      <span id="status" class="status" role="status"></span>
+    </div>
+  </section>
+
+  <!-- 2. Mô phỏng trực tiếp -->
+  <section class="card" id="live">
+    <h2>Mô phỏng trực tiếp (Live Simulation)</h2>
+    <p class="hint">Bấm Phát để xem 4 thuật toán chạy song song.</p>
+
+    <div class="player">
+      <button type="button" id="btn-play" class="btn-primary">Phát (Play)</button>
+      <button type="button" id="btn-pause" class="btn-ghost">Tạm dừng (Pause)</button>
+      <button type="button" id="btn-reset" class="btn-ghost">Chạy lại (Reset)</button>
+      <button type="button" id="btn-end" class="btn-ghost">Tới cuối (Skip to end)</button>
+      <label class="speed">Tốc độ (Speed)
+        <select id="speed">
+          <option value="0.1">0.1×</option>
+          <option value="0.25">0.25×</option>
+          <option value="0.5" selected>0.5×</option>
+          <option value="1">1× (real-time)</option>
+          <option value="2">2×</option>
+          <option value="5">5×</option>
+          <option value="10">10×</option>
+        </select>
+      </label>
+    </div>
+    <div class="timeline">
+      <input type="range" id="timeline" min="0" max="1000" value="0" step="1" aria-label="Thời gian mô phỏng">
+      <span id="timeline-label" class="mono">0 / 0 ms</span>
+    </div>
+
+    <div class="sim-grid" id="sim-grid">
+      <!-- 4 khung được tạo bằng simulation.js -->
+    </div>
+
+    <ul class="legend">
+      <li><span class="dot dot-light"></span>Request nhẹ (Light)</li>
+      <li><span class="dot dot-heavy"></span>Request nặng (Heavy)</li>
+      <li><span class="dot dot-sticky"></span>Viền tím: sticky client</li>
+      <li><span class="box-sample">12</span>Số đã xử lý xong (Done)</li>
+      <li><span class="bar-sample"></span>Kết nối mở (Open conn.)</li>
+      <li><span class="box-sample box-over"></span>Quá tải (Overload)</li>
+      <li><span class="box-sample box-small">×2</span>Server yếu (Slow)</li>
+    </ul>
+  </section>
+
+  <!-- 3. Kết quả -->
+  <section class="card" id="results">
+    <div class="section-head">
+      <h2>Kết quả (Results)</h2>
+      <a id="btn-csv" class="btn-ghost" href="#" download>Tải log CSV (Export CSV)</a>
+    </div>
+    <p class="hint">Ô xanh là giá trị tốt nhất của cột.</p>
+
+    <div class="table-wrap">
+      <table id="result-table"></table>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-head">
+        <h3>Biểu đồ 1: % tải mỗi server (Workload)</h3>
+        <div class="tabs" id="tabs-workload">
+          <button type="button" class="tab active" data-mode="request">Theo số request</button>
+          <button type="button" class="tab" data-mode="busy">Theo thời gian xử lý</button>
+        </div>
+      </div>
+      <div class="chart-box"><canvas id="chart-workload"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <h3>Biểu đồ 2: Makespan và thời gian chờ TB (Avg wait)</h3>
+      <div class="chart-pair">
+        <div class="chart-box small"><canvas id="chart-makespan"></canvas></div>
+        <div class="chart-box small"><canvas id="chart-wait"></canvas></div>
+      </div>
+    </div>
+
+    <div class="chart-card">
+      <div class="chart-head">
+        <h3>Biểu đồ 3: Ảnh hưởng của sticky client</h3>
+        <div class="tabs" id="tabs-sticky">
+          <button type="button" class="tab active" data-metric="makespan">Makespan</button>
+          <button type="button" class="tab" data-metric="avg_wait">Chờ TB (Avg wait)</button>
+        </div>
+      </div>
+      <div class="chart-pair">
+        <div class="chart-box small"><canvas id="chart-sticky-compare"></canvas></div>
+        <div class="chart-box small"><canvas id="chart-sticky-dist"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Nhận xét -->
+  <section class="card" id="analysis">
+    <h2>Nhận xét (Analysis)</h2>
+    <p class="hint">Nhận xét tự sinh từ số liệu của lần chạy hiện tại.</p>
+    <div id="analysis-text"></div>
+
+    <h3>Khuyến nghị (Recommendation)</h3>
+    <div class="table-wrap">
+      <table class="reco">
+        <thead>
+          <tr><th>Bối cảnh hệ thống</th><th>Nên dùng</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Server đồng nhất, request đều nhau</td><td>Round Robin (đơn giản, đủ tốt)</td></tr>
+          <tr><td>Request dài ngắn khác nhau</td><td>Least Connections</td></tr>
+          <tr><td>Cần giữ session (Session stickiness)</td><td>IP Hash (chấp nhận lệch tải)</td></tr>
+          <tr><td>Server năng lực khác nhau</td><td>Least Response Time hoặc Least Connections</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<footer class="page-footer">
+  Đồ án PBL4 · Nhóm thực hiện: ……………… · Mô phỏng thay cho Web Server thật
+</footer>
+
+<script src="js/api.js"></script>
+<script src="js/settings.js"></script>
+<script src="js/simulation.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
