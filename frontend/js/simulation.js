@@ -1,8 +1,6 @@
-// Vẽ khung "Load Balancer → các server" trên Canvas.
-//  - SimPanel : phát lại (replay) 1 lượt chạy từ log events/assignments (mô phỏng hoặc chạy thật).
-//               Trạng thái tại thời điểm t được tính lại hoàn toàn từ log nên tua tới/lui luôn đúng.
-//  - LivePanel: vẽ trạng thái LB thật theo thời gian thực từ WebSocket.
-//  - Player   : 1 đồng hồ chung điều khiển nhiều SimPanel chạy song song.
+// Vẽ sơ đồ "Load Balancer → các server" trên Canvas.
+//  - PanelBase: vẽ cổng LB, ô server, hàng đợi, thanh kết nối mở, chấm request bay.
+//  - AlgoPanel: 1 sơ đồ thuật toán, cập nhật theo thời gian thực từ WebSocket.
 
 const CANVAS_W = 560;
 const CANVAS_H = 290;
@@ -81,15 +79,19 @@ class PanelBase {
   }
 
   // queue: danh sách request {kind, client_ip} đang nằm trong server (chấm đầu là đang xử lý)
-  drawServer(i, open, done, queue, threshold, stickyIp, down) {
+  // down: true = mất kết nối, "off" = admin đã tắt server (vẽ mờ, nét đứt)
+  // overloadedOverride: true/false để tự quyết ô có đỏ không (sơ đồ lịch sử), bỏ trống = theo open >= threshold
+  drawServer(i, open, done, queue, threshold, stickyIp, down, overloadedOverride) {
     const ctx = this.ctx;
     const b = this.boxes[i];
-    const overloaded = open >= threshold;
+    const off = down === "off";
+    const overloaded = overloadedOverride === undefined ? open >= threshold : overloadedOverride;
     const danger = cssVar("--danger");
+    ctx.globalAlpha = off ? 0.45 : 1;
 
     // Ô server: chuyển đỏ khi quá tải
-    ctx.fillStyle = overloaded ? "rgba(229, 72, 77, 0.35)" : cssVar("--surface-2");
-    ctx.strokeStyle = overloaded || down ? danger : cssVar("--border");
+    ctx.fillStyle = overloaded ? "rgba(229, 72, 77, 0.35)" : off ? cssVar("--bg") : cssVar("--surface-2");
+    ctx.strokeStyle = overloaded || (down && !off) ? danger : off ? cssVar("--text-muted") : cssVar("--border");
     ctx.lineWidth = overloaded ? 2 : 1;
     if (down) ctx.setLineDash([4, 3]);
     roundRect(ctx, b.x, b.y, b.w, b.h, 8);
@@ -109,12 +111,13 @@ class PanelBase {
       ctx.fillText("×" + this.factors[i], b.x + b.w - 7, b.y + 6);
     }
 
-    // Số request đã xử lý xong (server mất kết nối thì ghi "OFF")
+    // Số request đã xử lý xong (server tắt ghi "TẮT", mất kết nối ghi "LỖI")
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillStyle = down ? danger : cssVar("--text");
-    ctx.font = "700 " + Math.round(b.h * 0.26) + "px system-ui, sans-serif";
-    ctx.fillText(down ? "OFF" : String(done), b.cx, b.y + b.h * 0.42);
+    ctx.fillStyle = off ? cssVar("--text-2") : down ? danger : cssVar("--text");
+    const label = off ? "TẮT" : down ? "LỖI" : String(done);
+    ctx.font = "700 " + Math.round(b.h * (down ? 0.2 : 0.26)) + "px system-ui, sans-serif";
+    ctx.fillText(label, b.cx, b.y + b.h * 0.42);
 
     const r = 3;
     const perRow = Math.max(1, Math.floor((b.w - 10) / (r * 2 + 3)));
@@ -162,6 +165,7 @@ class PanelBase {
     ctx.textBaseline = "bottom";
     ctx.fillStyle = overloaded ? danger : cssVar("--text-2");
     ctx.fillText(String(open), barX + BAR_W / 2, b.y - 3);
+    ctx.globalAlpha = 1;
   }
 
   // Chấm bay từ cổng xuống ô server, p = tiến độ 0..1
@@ -189,112 +193,141 @@ class PanelBase {
   }
 }
 
-function factorsFromParams(params) {
-  const slow = slowServers(params);
-  const out = [];
-  for (let i = 0; i < params.num_servers; i++) out.push(slow.indexOf(i) >= 0 ? params.slow_factor : 1);
-  return out;
-}
-
-// data: { params, requests, results: { [key]: { assignments, events, metrics } } }
-class SimPanel extends PanelBase {
-  constructor(container, algo, data, title) {
-    super(container, title || algo.name, cssVar("--algo-" + algo.key), factorsFromParams(data.params));
-    this.params = data.params;
-    this.result = data.results[algo.key];
-    this.requests = data.requests;
-  }
-
-  // Trạng thái server tại thời điểm t, tính từ log events
-  stateAt(t) {
-    const n = this.params.num_servers;
-    const open = new Array(n).fill(0);
-    const done = new Array(n).fill(0);
-    for (const e of this.result.events) {
-      if (e.t > t) break; // events đã được sắp xếp theo thời gian
-      open[e.server] = e.open_connections_after;
-      if (e.type === "FINISH") done[e.server] += 1;
-    }
-    return { open: open, done: done };
-  }
-
-  draw(t, flySim) {
-    const st = this.stateAt(t);
-    const totalDone = st.done.reduce((a, b) => a + b, 0);
-    const total = this.result.assignments.length;
-    let info = "t = " + t.toFixed(0) + " ms · Xong " + totalDone + "/" + total;
-    if (totalDone === total) info += " ✓";
-    this.infoEl.textContent = info;
-
-    this.drawGate();
-    const n = this.params.num_servers;
-    const queues = [];
-    for (let i = 0; i < n; i++) queues.push([]);
-    const flying = [];
-    for (const a of this.result.assignments) {
-      if (a.arrival > t) continue;
-      if (t - a.arrival < flySim) flying.push(a);
-      else if (t < a.finish) queues[a.server].push(this.requests[a.request_id]);
-    }
-    for (let i = 0; i < n; i++) {
-      this.drawServer(i, st.open[i], st.done[i], queues[i], this.params.overload_threshold, this.params.sticky_ip, false);
-    }
-    for (const a of flying) {
-      this.drawFlying(a.server, (t - a.arrival) / flySim, this.requests[a.request_id], this.params.sticky_ip);
-    }
-  }
-}
-
-// Trạng thái LB thật. Gọi update(msg) với mỗi tin WebSocket "state".
-class LivePanel extends PanelBase {
-  constructor(container, servers) {
-    super(container, "Load Balancer thật", cssVar("--primary"), servers.map((s) => s.slow_factor));
+// 1 sơ đồ thuật toán trên trang Tổng quan, cập nhật theo thời gian thực từ WebSocket.
+// Sơ đồ của thuật toán đang chạy vẽ bằng số liệu LB thật, 3 sơ đồ còn lại vẽ bằng cụm server ảo
+// (mô phỏng trực tiếp trên cùng luồng request). Sự kiện được gửi kèm "g" = thuật toán của sơ đồ.
+class AlgoPanel extends PanelBase {
+  constructor(container, algo, slowFactors) {
+    super(container, algo.name, cssVar("--algo-" + algo.key), slowFactors);
+    this.key = algo.key;
     this.inflight = new Map(); // id -> {s, kind, client_ip, at}
-    this.state = null;
+    this.servers = slowFactors.map(() => ({ open: 0, done: 0, up: null }));
+    this.threshold = 5;
+    this.stickyIp = null;
     this.FLY_MS = 250;
-    const loop = () => {
-      this.draw();
-      requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
+
+    // Thêm nhãn trạng thái + nút chuyển vào phần đầu sơ đồ
+    this.tagsEl = document.createElement("span");
+    this.tagsEl.className = "sim-tags";
+    this.nameEl.after(this.tagsEl);
+    this.foot = document.createElement("div");
+    this.foot.className = "sim-foot";
+    this.foot.innerHTML = '<span class="sim-wait"></span>' +
+      '<button type="button" class="btn-primary btn-switch" hidden></button>';
+    this.waitEl = this.foot.querySelector(".sim-wait");
+    this.switchBtn = this.foot.querySelector(".btn-switch");
+    this.switchBtn.dataset.algo = algo.key;
+    this.el.appendChild(this.foot); // dưới canvas: 4 sơ đồ luôn thẳng hàng dù có nút hay không
   }
 
-  update(msg) {
-    this.state = msg;
-    if (msg.algorithm_name) {
-      this.nameEl.textContent = msg.algorithm_name;
-      this.el.style.setProperty("--algo-color", cssVar("--algo-" + msg.algorithm));
-      this.color = cssVar("--algo-" + msg.algorithm);
-    }
-    const now = performance.now();
-    for (const e of msg.events || []) {
-      if (e.e === "a") this.inflight.set(e.id, { s: e.s, kind: e.k, client_ip: e.ip, at: now });
-      else this.inflight.delete(e.id);
-    }
-    // Phòng mất sự kiện "f" (VD: tab bị ẩn lâu): bỏ request treo quá 2 phút
+  // Số server hoặc hệ số chậm thay đổi (admin chỉnh cụm server): tính lại vị trí các ô
+  setFactors(factors) {
+    if (factors.join() === this.factors.join()) return;
+    this.factors = factors.slice();
+    this.computeLayout();
+  }
+
+  addEvent(e, now) {
+    if (e.e === "a") this.inflight.set(e.id, { s: e.s, kind: e.k, client_ip: e.ip, at: now });
+    else this.inflight.delete(e.id);
+  }
+
+  // Phòng mất sự kiện "f" (VD: tab bị ẩn lâu): bỏ request treo quá 2 phút
+  dropStale(now) {
     for (const [id, r] of this.inflight) if (now - r.at > 120000) this.inflight.delete(id);
   }
 
   draw() {
-    if (!this.state) return;
-    const run = this.state.run;
-    const threshold = run ? run.overload_threshold : 5;
-    const stickyIp = run ? run.sticky_ip : null;
     const now = performance.now();
-    const servers = this.state.servers;
-    this.infoEl.textContent = "Tổng " + this.state.total + " request · lỗi " + this.state.errors;
-
     this.drawGate();
-    const queues = servers.map(() => []);
+    const queues = this.servers.map(() => []);
     const flying = [];
     for (const r of this.inflight.values()) {
       if (now - r.at < this.FLY_MS) flying.push(r);
-      else queues[r.s].push(r);
+      else if (queues[r.s]) queues[r.s].push(r);
     }
-    servers.forEach((s, i) => {
-      this.drawServer(i, s.open, s.done, queues[i], threshold, stickyIp, s.up === false);
+    const n = Math.min(this.servers.length, this.boxes.length);
+    for (let i = 0; i < n; i++) {
+      const s = this.servers[i];
+      const status = s.enabled === false ? "off" : s.up === false;
+      this.drawServer(i, s.open, s.done, queues[i], this.threshold, this.stickyIp, status);
+    }
+    // Server vừa bị bớt: bỏ qua chấm còn bay tới nó
+    for (const r of flying) {
+      if (r.s < n) this.drawFlying(r.s, (now - r.at) / this.FLY_MS, r, this.stickyIp);
+    }
+  }
+}
+
+// Sơ đồ 1 giai đoạn trong lịch sử: LB đã chia request của giai đoạn đó cho các server thế nào.
+//  - Đường nối LB → server dày theo % request, ghi % trên đường.
+//  - Số trong ô = số request server nhận; thanh dọc = hàng đợi lớn nhất (đỏ nếu từng vượt ngưỡng quá tải).
+class SegmentPanel extends PanelBase {
+  constructor(container, algo, name, factors) {
+    super(container, name, cssVar("--algo-" + algo), factors);
+    this.algo = algo;
+    this.statsEl = document.createElement("div");
+    this.statsEl.className = "seg-stats";
+    this.el.appendChild(this.statsEl);
+  }
+
+  draw(seg, threshold) {
+    const factors = seg.servers.map((s) => s.factor);
+    if (factors.join() !== this.factors.join()) {
+      this.factors = factors;
+      this.computeLayout();
+    }
+    this.drawGate();
+    const ctx = this.ctx;
+    const x0 = GATE.x + GATE.w / 2;
+    const y0 = GATE.y + GATE.h;
+    // Đường chia tải (vẽ trước để nằm dưới ô server)
+    seg.servers.forEach((s, i) => {
+      const b = this.boxes[i];
+      if (!b || !s.count) return;
+      ctx.strokeStyle = this.color;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.5 + (s.pct / 100) * 22;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 + 2);
+      ctx.lineTo(b.cx, b.y - 18);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+      // Nhãn % ở giữa đường
+      const mx = x0 + (b.cx - x0) * 0.55;
+      const my = y0 + (b.y - 18 - y0) * 0.55;
+      const label = fmt(s.pct, 0) + "%";
+      ctx.font = "700 12px system-ui, sans-serif";
+      const w = ctx.measureText(label).width + 10;
+      ctx.fillStyle = cssVar("--bg");
+      roundRect(ctx, mx - w / 2, my - 9, w, 18, 9);
+      ctx.fill();
+      ctx.fillStyle = cssVar("--text");
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, mx, my);
     });
-    for (const r of flying) this.drawFlying(r.s, (now - r.at) / this.FLY_MS, r, stickyIp);
+    seg.servers.forEach((s, i) => {
+      // Đỏ khi quá tải đáng kể (>= 1 giây), không tô đỏ vì vượt ngưỡng chớp nhoáng
+      if (this.boxes[i]) {
+        this.drawServer(i, s.max_open, s.count, [], threshold, null, s.enabled === false ? "off" : false,
+          s.overload_s >= 1);
+      }
+    });
+
+    // Chờ TB từng server (HTML dưới sơ đồ)
+    this.statsEl.innerHTML = "";
+    seg.servers.forEach((s) => {
+      const cell = document.createElement("div");
+      cell.className = "seg-stat" + (s.overload_s >= 1 ? " over" : "");
+      const n = document.createElement("b");
+      n.textContent = s.name + (s.factor !== 1 ? " ×" + String(s.factor).replace(".", ",") : "");
+      cell.appendChild(n);
+      cell.appendChild(document.createTextNode(" chờ " + fmtMs(s.avg_wait, 0) +
+        (s.overload_s >= 1 ? " · quá tải " + fmt(s.overload_s, 1) + " giây" : "")));
+      this.statsEl.appendChild(cell);
+    });
   }
 }
 
@@ -309,121 +342,6 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// Bộ điều khiển phát lại: 1 đồng hồ chung cho các khung trong root.
-// root chứa: .js-play .js-pause .js-reset .js-end .js-speed .js-timeline .js-timeline-label .js-grid
-class Player {
-  constructor(root) {
-    this.root = root;
-    this.panels = [];
-    this.t = 0;
-    this.endT = 0;
-    this.playing = false;
-    this.lastTs = null;
-    const q = (c) => root.querySelector(c);
-    q(".js-play").addEventListener("click", () => this.play());
-    q(".js-pause").addEventListener("click", () => this.pause());
-    q(".js-reset").addEventListener("click", () => this.reset());
-    q(".js-end").addEventListener("click", () => this.skipToEnd());
-    const speedEl = q(".js-speed");
-    this.speed = Number(speedEl.value);
-    speedEl.addEventListener("change", () => {
-      this.speed = Number(speedEl.value);
-      this.render();
-    });
-    this.slider = q(".js-timeline");
-    this.slider.addEventListener("input", () => {
-      this.t = (Number(this.slider.value) / 1000) * this.endT;
-      this.render();
-    });
-    this.label = q(".js-timeline-label");
-    this.grid = q(".js-grid");
-  }
-
-  // items: [{algo, data, title?}] — mỗi item 1 khung
-  load(items) {
-    this.pause();
-    this.grid.innerHTML = "";
-    this.panels = items.map((it) => new SimPanel(this.grid, it.algo, it.data, it.title));
-    // Đồng hồ chạy tới khi khung chậm nhất xong
-    this.endT = Math.max.apply(null, this.panels.map((p) => p.result.metrics ? p.result.metrics.makespan : 0));
-    this.t = 0;
-    this.render();
-  }
-
-  // Thời gian bay của chấm tính theo thời gian mô phỏng sao cho mắt người
-  // luôn thấy khoảng ~0.25s thật, nhưng không quá dài khi tua nhanh.
-  flyDuration() {
-    return Math.min(150, Math.max(20, 250 * this.speed));
-  }
-
-  render() {
-    const fly = this.flyDuration();
-    this.panels.forEach((p) => p.draw(this.t, fly));
-    this.slider.value = this.endT ? Math.round((this.t / this.endT) * 1000) : 0;
-    this.label.textContent = this.t.toFixed(0) + " / " + this.endT.toFixed(0) + " ms";
-  }
-
-  play() {
-    if (!this.panels.length || this.playing) return;
-    if (this.t >= this.endT) this.t = 0;
-    this.playing = true;
-    this.lastTs = null;
-    requestAnimationFrame((ts) => this.tick(ts));
-  }
-
-  tick(ts) {
-    if (!this.playing) return;
-    // 1 ms thật × tốc độ = số ms mô phỏng trôi qua (1× là real-time)
-    if (this.lastTs !== null) this.t += (ts - this.lastTs) * this.speed;
-    this.lastTs = ts;
-    if (this.t >= this.endT) {
-      this.t = this.endT;
-      this.playing = false;
-    }
-    this.render();
-    if (this.playing) requestAnimationFrame((t2) => this.tick(t2));
-  }
-
-  pause() {
-    this.playing = false;
-  }
-
-  reset() {
-    this.pause();
-    this.t = 0;
-    this.render();
-  }
-
-  skipToEnd() {
-    this.pause();
-    this.t = this.endT;
-    this.render();
-  }
-}
-
-// HTML của bộ điều khiển phát lại (dùng ở trang Mô phỏng và Chạy thật)
-function playerHtml() {
-  return '' +
-    '<div class="player">' +
-    '  <button type="button" class="btn-primary js-play">Phát (Play)</button>' +
-    '  <button type="button" class="btn-ghost js-pause">Tạm dừng (Pause)</button>' +
-    '  <button type="button" class="btn-ghost js-reset">Chạy lại (Reset)</button>' +
-    '  <button type="button" class="btn-ghost js-end">Tới cuối (Skip to end)</button>' +
-    '  <label class="speed">Tốc độ (Speed)' +
-    '    <select class="js-speed">' +
-    '      <option value="0.1">0.1×</option><option value="0.25">0.25×</option>' +
-    '      <option value="0.5" selected>0.5×</option><option value="1">1× (real-time)</option>' +
-    '      <option value="2">2×</option><option value="5">5×</option><option value="10">10×</option>' +
-    "    </select>" +
-    "  </label>" +
-    "</div>" +
-    '<div class="timeline">' +
-    '  <input type="range" class="js-timeline" min="0" max="1000" value="0" step="1" aria-label="Thời gian">' +
-    '  <span class="mono js-timeline-label">0 / 0 ms</span>' +
-    "</div>" +
-    '<div class="sim-grid js-grid"></div>';
-}
-
 // Chú thích ký hiệu dùng chung
 function legendHtml() {
   return '' +
@@ -435,5 +353,6 @@ function legendHtml() {
     '  <li><span class="bar-sample"></span>Kết nối mở (Open conn.)</li>' +
     '  <li><span class="box-sample box-over"></span>Quá tải (Overload)</li>' +
     '  <li><span class="box-sample box-small">×2</span>Server yếu (Slow)</li>' +
+    '  <li><span class="box-sample box-off">TẮT</span>Server đang tắt</li>' +
     "</ul>";
 }

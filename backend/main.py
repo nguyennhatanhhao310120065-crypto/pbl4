@@ -12,19 +12,11 @@ from aiohttp import web
 
 from backend import db
 from backend.admin import lan_ip, make_admin_app
-from backend.config import ADMIN_HOST, ADMIN_PORT, CLUSTER, LB_HOST, LB_PORT, cluster_params, slow_factors
+from backend.config import ADMIN_HOST, ADMIN_PORT, LB_HOST, LB_PORT
 from backend.load_balancer import LoadBalancer, make_proxy_app
 
 
-def check_cluster():
-    # Bản mô phỏng coi server yếu là các server cuối, cùng hệ số -> cụm thật phải giống vậy
-    factors = [s["slow_factor"] for s in CLUSTER]
-    if factors != slow_factors(cluster_params()):
-        raise SystemExit("CLUSTER trong config.py: server yếu phải nằm cuối và cùng hệ số chậm")
-
-
 async def serve():
-    check_cluster()
     db.init()
     lb = LoadBalancer()
     await lb.start()

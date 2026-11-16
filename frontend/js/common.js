@@ -16,6 +16,14 @@ function fmt(x, digits) {
   return Number(x).toLocaleString("vi-VN", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
+// Thời gian: dưới 1000 ms ghi "ms", từ 1000 ms trở lên đổi sang giây cho dễ đọc
+// (tránh đọc nhầm "1.886,3 ms" thành hàng nghìn giây).
+function fmtMs(ms, digits) {
+  if (ms === null || ms === undefined) return "–";
+  if (Math.abs(ms) >= 1000) return fmt(ms / 1000, 2) + " giây";
+  return fmt(ms, digits === undefined ? 1 : digits) + " ms";
+}
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",

@@ -9,6 +9,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import socket
 import sys
@@ -18,11 +19,11 @@ from aiohttp import WSMsgType, web
 
 from backend import db
 from backend.algorithms import ALGORITHMS, ip_to_server
-from backend.config import (ADMIN_PASSWORD, ADMIN_USERNAME, CLUSTER, DEFAULT_PARAMS, LB_HOST, LB_PORT, LB_URL,
-                            PARAM_LIMITS, SESSION_HOURS, cluster_params)
+from backend.config import (ADMIN_PASSWORD, ADMIN_USERNAME, DEFAULT_PARAMS, LB_HOST, LB_PORT, LB_URL,
+                            PARAM_LIMITS, SESSION_HOURS)
 from backend.generator import generate_requests
 from backend.simulator import run_all
-from backend.load_balancer import ALGO_NAMES, simulate_run
+from backend.load_balancer import ALGO_NAMES, ClusterError, simulate_run
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(ROOT, "frontend")
@@ -98,6 +99,15 @@ async def auth_middleware(request, handler):
 
 
 @web.middleware
+async def no_cache_middleware(request, handler):
+    """Bắt trình duyệt hỏi lại server mỗi lần mở trang, để sửa giao diện xong chỉ cần tải lại là thấy bản mới."""
+    resp = await handler(request)
+    if request.path.endswith((".html", ".js", ".css")) or request.path == "/":
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@web.middleware
 async def error_middleware(request, handler):
     try:
         return await handler(request)
@@ -132,9 +142,24 @@ async def me(request):
 
 # ---------- Trang ----------
 
+ASSET_RE = re.compile(r'((?:src|href)="/(?:js|css)/[\w.-]+\.(?:js|css))"')
+
+
+def versioned(match):
+    """Thêm ?v=<thời điểm sửa file> vào link JS/CSS: file đổi thì link đổi, trình duyệt không dùng bản cache cũ."""
+    path = os.path.join(FRONTEND_DIR, match.group(1).split('"/', 1)[1])
+    try:
+        stamp = int(os.path.getmtime(path))
+    except OSError:
+        return match.group(0)
+    return '%s?v=%d"' % (match.group(1), stamp)
+
+
 def page(name):
     async def handler(request):
-        return web.FileResponse(os.path.join(FRONTEND_DIR, name))
+        with open(os.path.join(FRONTEND_DIR, name), encoding="utf-8") as f:
+            html = ASSET_RE.sub(versioned, f.read())
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-cache"})
     return handler
 
 
@@ -154,17 +179,17 @@ def lan_ip():
             return "127.0.0.1"
 
 
-def cluster_info():
+def cluster_info(lb):
     return {
-        "servers": CLUSTER,
-        "params": cluster_params(),
+        "servers": [s.snapshot() for s in lb.servers],
+        "params": lb.cluster_params(),
         "lb_url": LB_URL,
         "lan_url": ("http://%s:%d" % (lan_ip(), LB_PORT)) if LB_HOST == "0.0.0.0" else None,
     }
 
 
 async def api_defaults(request):
-    return web.json_response({"defaults": DEFAULT_PARAMS, "cluster": cluster_info()})
+    return web.json_response({"defaults": DEFAULT_PARAMS, "cluster": cluster_info(request.app[LB_KEY])})
 
 
 # ---------- Mô phỏng theo tham số (trang Mô phỏng) ----------
@@ -242,7 +267,8 @@ async def api_lb_state(request):
 async def api_lb_algorithm(request):
     data = await read_json(request)
     try:
-        request.app[LB_KEY].set_algorithm(str(data.get("algorithm", "")))
+        source = "advice" if data.get("source") == "advice" else "manual"
+        request.app[LB_KEY].set_algorithm(str(data.get("algorithm", "")), source)
     except ValueError as exc:
         return error(str(exc))
     except RuntimeError as exc:
@@ -266,11 +292,63 @@ async def api_advisor_snapshot(request):
     return web.json_response(data)
 
 
+async def api_history(request):
+    return web.json_response(request.app[LB_KEY].history_message())
+
+
+async def api_history_clear(request):
+    lb = request.app[LB_KEY]
+    lb.history.clear(lb.algo_key)
+    msg = lb.history_message()
+    lb.broadcast(msg)
+    return web.json_response(msg)
+
+
+# ---------- Chỉnh cụm server ----------
+
+async def api_server_update(request):
+    """Đổi hệ số chậm và / hoặc bật / tắt 1 server: {"slow_factor": 2, "enabled": false}."""
+    lb = request.app[LB_KEY]
+    data = await read_json(request)
+    try:
+        index = int(request.match_info["index"])
+        if "slow_factor" in data:
+            try:
+                factor = float(data["slow_factor"])
+            except (TypeError, ValueError):
+                return error("slow_factor phải là số")
+            await lb.set_slow_factor(index, int(factor) if factor.is_integer() else factor)
+        if "enabled" in data:
+            lb.set_enabled(index, bool(data["enabled"]))
+    except ClusterError as exc:
+        return error(str(exc), 409)
+    return web.json_response(lb.state())
+
+
+async def api_server_add(request):
+    lb = request.app[LB_KEY]
+    try:
+        await lb.add_server()
+    except ClusterError as exc:
+        return error(str(exc), 409)
+    return web.json_response(lb.state())
+
+
+async def api_server_remove(request):
+    lb = request.app[LB_KEY]
+    try:
+        lb.remove_server()
+    except ClusterError as exc:
+        return error(str(exc), 409)
+    return web.json_response(lb.state())
+
+
 async def ws_handler(request):
     lb = request.app[LB_KEY]
     ws = web.WebSocketResponse(heartbeat=20)
     await ws.prepare(request)
     await ws.send_str(json.dumps(dict(lb.state(), type="state", events=[])))
+    await ws.send_str(json.dumps(lb.history_message()))
     lb.subscribers.add(ws)
     try:
         async for msg in ws:
@@ -283,10 +361,10 @@ async def ws_handler(request):
 
 # ---------- Lượt chạy thật ----------
 
-def run_params(raw):
-    """Tham số request lấy từ người dùng, tham số server lấy theo cụm server thật."""
+def run_params(raw, lb):
+    """Tham số request lấy từ người dùng, tham số server lấy theo cụm server thật hiện tại."""
     params = parse_params(raw)
-    params.update(cluster_params())
+    params.update(lb.cluster_params())
     return params
 
 
@@ -301,8 +379,8 @@ async def api_runs_start(request):
     algorithm = str(data.get("algorithm") or lb.algo_key)
     if algorithm not in {c.key for c in ALGORITHMS}:
         return error("Không có thuật toán: %s" % algorithm)
-    params = run_params(data.get("params"))
-    down = [s.name for s in lb.servers if not s.up]
+    params = run_params(data.get("params"), lb)
+    down = [s.name for s in lb.servers if s.enabled and not s.up]
     if down:
         return error("Server chưa chạy: %s" % ", ".join(down), 409)
     if lb.run and lb.run.status in ("running", "saving"):
@@ -360,11 +438,11 @@ async def api_run_csv(request):
 
 
 def make_admin_app(lb):
-    app = web.Application(middlewares=[auth_middleware, error_middleware])
+    app = web.Application(middlewares=[no_cache_middleware, auth_middleware, error_middleware])
     app[LB_KEY] = lb
     r = app.router
     r.add_get("/", index)
-    for name in ("login.html", "dashboard.html", "simulation.html", "runs.html"):
+    for name in ("login.html", "dashboard.html"):
         r.add_get("/" + name, page(name))
     r.add_static("/css/", os.path.join(FRONTEND_DIR, "css"))
     r.add_static("/js/", os.path.join(FRONTEND_DIR, "js"))
@@ -383,6 +461,12 @@ def make_admin_app(lb):
     r.add_post("/api/lb/reset", api_lb_reset)
     r.add_get("/api/advisor/snapshot", api_advisor_snapshot)
     r.add_get("/ws", ws_handler)
+
+    r.add_get("/api/history", api_history)
+    r.add_post("/api/history/clear", api_history_clear)
+    r.add_post("/api/servers", api_server_add)
+    r.add_delete("/api/servers", api_server_remove)
+    r.add_post("/api/servers/{index:\\d+}", api_server_update)
 
     r.add_get("/api/runs", api_runs_list)
     r.add_post("/api/runs", api_runs_start)

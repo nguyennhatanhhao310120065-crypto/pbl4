@@ -41,7 +41,12 @@ PARAM_LIMITS = {
 
 
 def slow_factors(params):
-    """Trả về list hệ số chậm cho từng server. Server yếu là các server cuối."""
+    """Trả về list hệ số chậm cho từng server.
+
+    params có "factors" (cụm thật, admin chỉnh từng server) thì dùng luôn; không thì server yếu là các server cuối.
+    """
+    if params.get("factors"):
+        return list(params["factors"])
     n = params["num_servers"]
     k = min(params["num_slow_servers"], n - 1)  # luôn giữ ít nhất 1 server bình thường
     return [params["slow_factor"] if i >= n - k else 1 for i in range(n)]
@@ -60,6 +65,14 @@ CLUSTER = [
     {"name": "s3", "port": BASE_PORT + 3, "slow_factor": 2},
 ]
 SERVER_HOST = "127.0.0.1"
+MIN_SERVERS = 2
+MAX_SERVERS = 6
+SLOW_FACTOR_CHOICES = [1, 1.5, 2, 3, 4, 5]   # hệ số chậm admin chọn được cho từng server
+
+
+def server_port(index):
+    """Cổng của server thứ index (server thêm từ trang admin cũng theo quy tắc này)."""
+    return BASE_PORT + index
 
 # LB_HOST=0.0.0.0 để máy khác cùng mạng Wi-Fi gửi request tới LB (VD: http://192.168.1.23:8080).
 # Trang admin luôn chỉ mở ở 127.0.0.1 để không lộ ra mạng.
@@ -74,6 +87,10 @@ ADMIN_PASSWORD = os.environ.get("LB_ADMIN_PASSWORD", "admin123")
 SESSION_HOURS = 8
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "lb.db")
+
+# Tăng mỗi khi backend thêm dữ liệu mà trang admin cần. Trang so với số của nó để báo
+# "backend đang chạy bản cũ, hãy chạy lại python run.py" thay vì im lặng thiếu tính năng.
+API_VERSION = 5
 
 HEALTH_INTERVAL = 1.0   # giây, LB kiểm tra sức khỏe server
 PUSH_INTERVAL = 0.1     # giây, LB đẩy trạng thái lên trang admin qua WebSocket

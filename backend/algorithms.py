@@ -17,8 +17,9 @@ class RoundRobin:
 
     def choose(self, request, servers, now):
         # Chỉ đếm lượt, không quan tâm server đang bận hay rảnh
-        idx = self.next_index
-        self.next_index = (self.next_index + 1) % len(servers)
+        # % len: số server có thể vừa giảm (tắt / bớt server)
+        idx = self.next_index % len(servers)
+        self.next_index = (idx + 1) % len(servers)
         return idx
 
 

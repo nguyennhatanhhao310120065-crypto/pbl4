@@ -5,7 +5,7 @@ So sánh 4 thuật toán **Round Robin, Least Connections, IP Hash, Least Respon
 1. **Load Balancer thật** chuyển tiếp request HTTP tới 4 Web Server thật (s3 chậm gấp đôi).
 2. LB ghi lại **chính các request thật** trong 20 giây gần nhất. Mỗi 2 giây, hệ thống **mô phỏng
    (Discrete-Event Simulation) cả 4 thuật toán trên đúng chuỗi request đó** và xếp hạng theo thời gian chờ TB.
-3. Khi thuật toán đang dùng kém hơn rõ rệt (tắc nghẽn), trang Tổng quan **đề xuất thuật toán tốt hơn**;
+3. Khi thuật toán đang dùng kém hơn rõ rệt (tắc nghẽn), trang admin **đề xuất thuật toán tốt hơn**;
    admin bấm 1 nút để chuyển ngay, kể cả giữa lúc traffic đang chạy.
 4. **Client** sinh traffic theo tham số của đề (300 request, 80/20 nhẹ/nặng, 25% sticky, ~96 req/s); mỗi lượt đo
    được lưu lại và đối chiếu với mô phỏng của cùng bộ request và cùng lịch đổi thuật toán.
@@ -31,7 +31,8 @@ So sánh 4 thuật toán **Round Robin, Least Connections, IP Hash, Least Respon
 
 - Với mỗi request, LB ghi: thời điểm đến, IP client, thời gian xử lý gốc (`X-Work-Ms`; không có thì lấy
   thời gian server đo được quy về server ×1).
-- Mô phỏng 4 thuật toán trên chuỗi request của 20 giây gần nhất (bắt đầu từ server rỗng) → bảng so sánh
+- Mô phỏng 4 thuật toán trên các request của lượt gửi gần nhất (mỗi lần bấm **Bắt đầu gửi**, bảng so sánh và 4 sơ đồ
+  bắt đầu lại từ đầu; gửi xong vẫn giữ kết quả. Chưa gửi lần nào thì dùng traffic 20 giây gần nhất) → bảng so sánh
   chờ TB, p95, hàng đợi lớn nhất, % vào server yếu, số lần quá tải.
 - **Đề xuất** khi thuật toán tốt nhất giảm chờ TB ít nhất 30% **và** ít nhất 5 ms so với thuật toán đang dùng
   (tránh đổi qua lại vì chênh lệch nhỏ). Hệ thống không tự đổi; admin bấm **Chuyển sang …**.
@@ -66,7 +67,7 @@ Mở **http://127.0.0.1:5050**, đăng nhập `admin` / `admin123`
 LB_HOST=0.0.0.0 python run.py
 ```
 
-Terminal in ra địa chỉ dạng `http://192.168.x.x:8080` để gửi cho máy khác (trang Tổng quan cũng hiện địa chỉ này).
+Terminal in ra địa chỉ dạng `http://192.168.x.x:8080` để gửi cho máy khác (trang admin cũng hiện địa chỉ này).
 Lần đầu macOS có thể hỏi cho phép kết nối đến: chọn **Cho phép**. Trang admin (5050) vẫn chỉ mở ở `127.0.0.1`.
 Không mở LB ra Internet: LB tin header `X-Forwarded-For` nên ai cũng có thể giả IP.
 
@@ -96,12 +97,31 @@ python -m unittest discover tests     # chạy test (gồm cả test hệ thốn
 
 | Trang | Chức năng |
 |---|---|
-| **Tổng quan** | Đổi thuật toán; **Đánh giá & đề xuất** (mô phỏng 4 thuật toán trên traffic thật, nút chuyển); khung lưu lượng trực tiếp; biểu đồ hàng đợi 60 giây (vạch dọc = lúc đổi thuật toán); bảng server; **Phân tích chi tiết**: phát lại 4 thuật toán song song, bảng kết quả, biểu đồ workload / makespan / chờ TB / sticky client, nhận xét, khuyến nghị |
-| **Mô phỏng** | Theo đề: chỉnh tham số / preset (mặc định 300 request, seed 42), chạy 4 thuật toán song song trên cùng bộ request, xếp hạng, nút **Áp dụng cho LB** và **Áp dụng & chạy đo**, biểu đồ, nhận xét, CSV |
-| **Chạy thật** | Sinh traffic bằng client (chọn thuật toán + tham số), tiến độ, lịch sử lượt đo, đối chiếu thật vs mô phỏng (cùng lịch đổi thuật toán), phát lại song song, CSV |
+| **Trang admin (1 trang duy nhất)** | Chọn thuật toán bằng tay (ô chọn + **Áp dụng**); gửi request (số lượng + tham số theo đề); **Đánh giá & đề xuất**; **4 sơ đồ thuật toán cùng lúc**; bảng so sánh 4 thuật toán; bảng Web Server có **chỉnh hệ số chậm, bật / tắt, thêm / bớt server** |
+
+**4 sơ đồ cùng lúc:** mỗi request đi qua LB được đưa vào cả 4 sơ đồ. Sơ đồ của thuật toán đang chạy vẽ bằng số liệu
+thật của LB (viền trắng đậm, nhãn **ĐANG CHẠY**); 3 sơ đồ còn lại là mô phỏng trực tiếp trên cùng luồng request
+(`backend/shadow.py`: server ảo 1 worker + hàng đợi FIFO, giống hệt engine mô phỏng). Thuật toán có chờ TB thấp nhất
+trong 20 giây gần nhất được viền xanh phát sáng, nhãn **TỐI ƯU NHẤT**, kèm nút **Chuyển sang …** (nhấp nháy khi
+đề xuất nên đổi). Có thể đổi thuật toán bất cứ lúc nào, kể cả khi đang gửi request.
+
+**Lịch sử chuyển thuật toán** (số liệu thật, `backend/history.py`): mỗi lần đổi thuật toán mở 1 giai đoạn mới
+(ghi rõ chọn tay hay theo đề xuất). Mỗi giai đoạn là 1 sơ đồ Load Balancer cho thấy LB đã chia request cho các server
+thế nào: đường nối LB → server dày theo % request, số request mỗi server, chờ TB, hàng đợi lớn nhất và thời gian quá tải
+từng server. Đổi thuật toán thì thêm sơ đồ mới bên cạnh (giai đoạn 1 → giai đoạn 2), kèm dòng tóm tắt (VD: Round Robin →
+Least Connections, chờ TB 924 ms → 74 ms, giảm 92%) và bảng so sánh các giai đoạn. Request, hàng đợi và quá tải được tính
+cho thuật toán đã chia request đó, nên hàng đợi thuật toán cũ để lại không bị tính cho thuật toán mới. Lịch sử giữ trong
+bộ nhớ (30 giai đoạn gần nhất), mất khi tắt chương trình.
+
+**Chỉnh cụm server** (bảng Web Server):
+- Đổi hệ số chậm (×1 … ×5) và bật / tắt từng server ngay cả khi đang gửi request. Server tắt không nhận request mới
+  (thuật toán chỉ chọn trong các server đang bật), request đang xử lý vẫn trả về. Phải còn ít nhất 1 server bật.
+- Thêm / bớt server (2–6 server) khi không gửi request. Server thêm mới dùng cổng `LB_BASE_PORT + số thứ tự`
+  (mặc định 84, 85); LB tự khởi động tiến trình Web Server nếu cổng đó chưa có server, và tắt nó khi bớt.
+- Mô phỏng trực tiếp (3 sơ đồ) và phần đề xuất luôn tính theo cụm server hiện tại.
 
 Ký hiệu trong khung: chấm trắng = request nhẹ, chấm cam = request nặng, viền tím = sticky client,
-số trong ô = request đã xong, thanh dọc = số kết nối mở (vạch đứt = ngưỡng), ô đỏ = quá tải, ô nhỏ "×2" = server yếu.
+số trong ô = request đã xong, thanh dọc = số kết nối mở (vạch đứt = ngưỡng), ô đỏ = quá tải, ô nhỏ "×2" = server yếu, ô mờ "TẮT" = server đang tắt.
 
 ## Số liệu của lượt chạy thật
 
@@ -144,14 +164,16 @@ load-balancer-sim/
 │   ├── web_server.py     # Web Server thật
 │   ├── load_balancer.py  # Load Balancer thật (reverse proxy)
 │   ├── advisor.py        # Mô phỏng trên traffic thật + đề xuất thuật toán
+│   ├── history.py        # Lịch sử chạy thật theo từng giai đoạn thuật toán
+│   ├── shadow.py         # Mô phỏng trực tiếp 4 thuật toán trên luồng request thật (4 sơ đồ)
 │   ├── client.py         # Client sinh request
 │   ├── admin.py          # Trang admin + API
 │   ├── db.py             # SQLite lưu lượt chạy (data/lb.db)
 │   └── main.py           # Tiến trình LB + admin
 ├── frontend/
-│   ├── login.html, dashboard.html, simulation.html, runs.html
+│   ├── login.html, dashboard.html
 │   ├── css/style.css
-│   └── js/ common.js, settings.js, simulation.js, charts.js, analysis.js, sim-page.js, dashboard.js, runs.js
+│   └── js/ common.js, settings.js, simulation.js, history.js, dashboard.js
 ├── tests/                # test_simulator.py, test_system.py
 ├── README.md
 └── REPORT.md             # Báo cáo phân tích

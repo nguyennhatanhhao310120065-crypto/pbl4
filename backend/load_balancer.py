@@ -9,10 +9,15 @@
 - Mọi request (kể cả không thuộc lượt chạy) được ghi vào "trace" 20 giây gần nhất. Mỗi
   ADVICE_INTERVAL giây, backend.advisor mô phỏng 4 thuật toán trên chính trace đó và
   đề xuất thuật toán tốt hơn nếu thuật toán đang dùng gây tắc nghẽn.
+- Admin chỉnh cụm server khi đang chạy: đổi hệ số chậm, bật / tắt, thêm / bớt server (server thêm mới
+  do LB tự khởi động tiến trình Web Server). Thuật toán chỉ chọn trong các server đang bật.
+- Mỗi request cũng được đưa vào 4 cụm server ảo (backend.shadow) để trang admin vẽ cả 4 sơ đồ
+  thuật toán cùng lúc: sơ đồ của thuật toán đang chạy dùng số liệu thật, 3 sơ đồ còn lại là mô phỏng.
 """
 
 import asyncio
 import json
+import sys
 import time
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
@@ -23,12 +28,19 @@ from aiohttp import web
 
 from backend import advisor, db
 from backend.algorithms import ALGORITHMS, Scheduled, make_algorithm
-from backend.config import CLUSTER, HEALTH_INTERVAL, PUSH_INTERVAL, SERVER_HOST
+from backend.config import (API_VERSION, CLUSTER, HEALTH_INTERVAL, MAX_SERVERS, MIN_SERVERS, PUSH_INTERVAL, SERVER_HOST,
+                            SLOW_FACTOR_CHOICES, server_port)
 from backend.generator import generate_requests
+from backend.history import History
 from backend.metrics import compute_metrics
+from backend.shadow import Shadows
 from backend.simulator import RECENT_WINDOW, simulate
 
 ALGO_NAMES = {cls.key: cls.name for cls in ALGORITHMS}
+
+
+class ClusterError(Exception):
+    """Không chỉnh được cụm server (lỗi do người dùng hoặc server không phản hồi)."""
 
 # Header không được chuyển tiếp qua proxy (hop-by-hop) hoặc do aiohttp tự tính lại
 HOP_HEADERS = {
@@ -60,6 +72,8 @@ class ServerState:
         self.done = 0
         self.errors = 0
         self.up = None                          # None = chưa kiểm tra lần nào
+        self.enabled = True                     # admin tắt thì LB không gửi request mới tới
+        self.process = None                     # tiến trình Web Server do LB khởi động (server thêm từ trang admin)
 
     def avg_recent_rt(self, default):
         if not self.recent_rt:
@@ -72,6 +86,7 @@ class ServerState:
             "port": self.port,
             "slow_factor": self.slow_factor,
             "up": self.up,
+            "enabled": self.enabled,
             "open": self.open_connections,
             "done": self.done,
             "errors": self.errors,
@@ -130,9 +145,12 @@ class LoadBalancer:
         self.tasks = []
         self.trace = deque()       # request gần nhất cho advisor: {t, ip, base, kind}
         self.trace_seq = 0         # tăng mỗi khi có request mới -> biết trace có thay đổi
+        self.trace_gen = 0         # tăng mỗi lượt gửi mới -> bỏ kết quả mô phỏng của lượt cũ đang tính dở
         self.advice = None
         self.switches = deque(maxlen=MAX_SWITCH_LOG)
         self.pool = None
+        self.shadows = Shadows([s.slow_factor for s in self.servers])
+        self.history = History(algorithm)
 
     # ---------- Vòng đời ----------
 
@@ -152,6 +170,9 @@ class LoadBalancer:
             t.cancel()
         if self.run and self.run.process and self.run.process.returncode is None:
             self.run.process.kill()
+        for s in self.servers:
+            if s.process and s.process.returncode is None:
+                s.process.terminate()
         for ws in list(self.subscribers):
             await ws.close()
         await self.session.close()
@@ -162,16 +183,18 @@ class LoadBalancer:
 
     # ---------- Điều khiển ----------
 
-    def set_algorithm(self, key):
+    def set_algorithm(self, key, source="manual"):
         """Đổi thuật toán ngay lập tức. Request đã chuyển tới server vẫn xử lý tiếp ở đó,
         chỉ request mới dùng thuật toán mới. Được phép đổi giữa lượt chạy (khi tắc nghẽn):
-        lượt chạy ghi lại thời điểm đổi để mô phỏng đối chiếu đổi đúng như vậy."""
+        lượt chạy ghi lại thời điểm đổi để mô phỏng đối chiếu đổi đúng như vậy.
+        source: "manual" (admin chọn tay) / "advice" (bấm nút theo đề xuất) — ghi vào lịch sử."""
         algorithm = make_algorithm(key)  # ném ValueError nếu sai key
         if key == self.algo_key:
             return
         old = self.algo_key
         self.algorithm = algorithm
         self.algo_key = key
+        self.history.start_segment(key, source)
         self.switches.appendleft({"at": datetime.now().strftime("%H:%M:%S"), "from": old, "to": key})
         run = self.run
         if run and run.status == "running":
@@ -181,11 +204,99 @@ class LoadBalancer:
             else:
                 run.schedule.append([round(t, 3), key])
 
+    # ---------- Cụm server ----------
+
+    def busy(self):
+        return bool(self.run and self.run.status in ("running", "saving"))
+
+    def cluster_params(self):
+        """Tham số server của cụm hiện tại (mọi server, kể cả đang tắt) cho lượt đo và mô phỏng đối chiếu."""
+        factors = [s.slow_factor for s in self.servers]
+        slow = [f for f in factors if f != 1]
+        return {"num_servers": len(factors), "factors": factors, "num_slow_servers": len(slow),
+                "slow_factor": slow[0] if slow else 1}
+
+    def server_at(self, index):
+        if not 0 <= index < len(self.servers):
+            raise ClusterError("Không có server số %d" % index)
+        return self.servers[index]
+
+    async def set_slow_factor(self, index, factor):
+        """Đổi hệ số chậm: báo Web Server thật trước, thành công mới cập nhật LB và cụm ảo."""
+        server = self.server_at(index)
+        if factor not in SLOW_FACTOR_CHOICES:
+            raise ClusterError("Hệ số chậm phải là một trong %s" % SLOW_FACTOR_CHOICES)
+        try:
+            async with self.session.post(server.base_url + "/config", json={"slow_factor": factor},
+                                         timeout=aiohttp.ClientTimeout(total=3)) as r:
+                if r.status != 200:
+                    raise ClusterError("%s từ chối đổi hệ số chậm (mã %d)" % (server.name, r.status))
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            raise ClusterError("Không kết nối được %s" % server.name)
+        server.slow_factor = factor
+        self.shadows.set_factor(index, factor)
+
+    def set_enabled(self, index, enabled):
+        server = self.server_at(index)
+        if not enabled and sum(1 for s in self.servers if s.enabled and s is not server) == 0:
+            raise ClusterError("Phải còn ít nhất 1 server đang bật")
+        server.enabled = enabled
+        self.shadows.set_enabled(index, enabled)
+
+    async def ping(self, url):
+        try:
+            async with self.session.get(url + "/health", timeout=aiohttp.ClientTimeout(total=0.5)) as r:
+                return r.status == 200
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return False
+
+    async def add_server(self):
+        """Thêm server cuối cùng (hệ số ×1). Cổng đã có Web Server chạy sẵn thì dùng lại, không thì tự khởi động."""
+        if self.busy():
+            raise ClusterError("Đang gửi request, đợi gửi xong rồi thêm server")
+        if len(self.servers) >= MAX_SERVERS:
+            raise ClusterError("Tối đa %d server" % MAX_SERVERS)
+        index = len(self.servers)
+        cfg = {"name": "s%d" % index, "port": server_port(index), "slow_factor": 1}
+        server = ServerState(index, cfg)
+        if not await self.ping(server.base_url):
+            server.process = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "backend.web_server", "--name", cfg["name"], "--port", str(cfg["port"]),
+                stdout=asyncio.subprocess.DEVNULL)
+            for _ in range(40):
+                await asyncio.sleep(0.1)
+                if server.process.returncode is not None:
+                    raise ClusterError("Không khởi động được %s (cổng %d bị chiếm hoặc thiếu quyền?)"
+                                       % (cfg["name"], cfg["port"]))
+                if await self.ping(server.base_url):
+                    break
+            else:
+                server.process.terminate()
+                raise ClusterError("%s không phản hồi sau 4 giây" % cfg["name"])
+        server.up = True
+        self.servers.append(server)
+        self.shadows.add_server(1)
+        await self.set_slow_factor(index, 1)  # server chạy sẵn có thể đang ở hệ số khác
+
+    def remove_server(self):
+        """Bớt server cuối cùng. Request đang xử lý ở đó vẫn trả về bình thường."""
+        if self.busy():
+            raise ClusterError("Đang gửi request, đợi gửi xong rồi bớt server")
+        if len(self.servers) <= MIN_SERVERS:
+            raise ClusterError("Tối thiểu %d server" % MIN_SERVERS)
+        if not any(s.enabled for s in self.servers[:-1]):
+            raise ClusterError("Phải còn ít nhất 1 server đang bật")
+        server = self.servers.pop()
+        self.shadows.remove_last()
+        if server.process and server.process.returncode is None:
+            server.process.terminate()
+
     def reset_counters(self):
         for s in self.servers:
             s.done = 0
             s.errors = 0
             s.recent_rt.clear()
+        self.shadows.reset()
         self.total = 0
         self.total_errors = 0
 
@@ -197,11 +308,27 @@ class LoadBalancer:
         self.set_algorithm(algorithm)
         self.algorithm = make_algorithm(algorithm)  # luôn bắt đầu từ trạng thái sạch
         self.reset_counters()
+        self.history.start_segment(algorithm, "run")  # mỗi lượt gửi là 1 giai đoạn mới trong lịch sử
         self.run = Run(run_id, algorithm, params)
+        # Phần so sánh 4 thuật toán + 4 sơ đồ bắt đầu lại từ đầu cho lượt gửi mới
+        self.trace.clear()
+        self.trace_seq += 1
+        self.trace_gen += 1
+        self.shadows = self.new_shadows()
+        self.advice = None
+        self.broadcast({"type": "advice", "advice": None})
         return self.run
+
+    def new_shadows(self):
+        """Cụm ảo sạch (không còn request nào), cùng hệ số chậm và trạng thái bật / tắt với cụm thật."""
+        shadows = Shadows([s.slow_factor for s in self.servers])
+        for s in self.servers:
+            shadows.set_enabled(s.index, s.enabled)
+        return shadows
 
     def state(self):
         return {
+            "api": API_VERSION,
             "algorithm": self.algo_key,
             "algorithm_name": ALGO_NAMES[self.algo_key],
             "algorithms": [{"key": c.key, "name": c.name} for c in ALGORITHMS],
@@ -211,6 +338,8 @@ class LoadBalancer:
             "run": self.run.summary() if self.run else None,
             "switches": list(self.switches),
             "advice": self.advice,
+            "shadows": self.shadows.snapshot(),
+            "limits": {"min_servers": MIN_SERVERS, "max_servers": MAX_SERVERS, "factors": SLOW_FACTOR_CHOICES},
         }
 
     # ---------- Reverse proxy ----------
@@ -222,17 +351,24 @@ class LoadBalancer:
         kind = request.headers.get("X-Request-Kind", "light")
         run, req_id = self.match_run(request, now)
 
-        idx = self.algorithm.choose({"client_ip": client_ip}, self.servers, now * 1000.0)
-        server = self.servers[idx]
+        active = [s for s in self.servers if s.enabled]
+        if not active:
+            return web.json_response({"error": "Không có server nào đang bật"}, status=503)
+        # Thuật toán chỉ thấy các server đang bật (Round Robin xoay vòng, IP Hash băm trên số server này)
+        server = active[self.algorithm.choose({"client_ip": client_ip}, active, now * 1000.0)]
+        idx = server.index
         server.open_connections += 1
+        segment = self.history.on_arrival(server.name, now)
         self.seq += 1
         gid = self.seq
         self.total += 1
-        self.emit({"e": "a", "id": gid, "s": idx, "k": kind, "ip": client_ip})
+        algo_key = self.algo_key
+        self.emit({"e": "a", "id": gid, "s": idx, "k": kind, "ip": client_ip, "g": algo_key})
         try:
             declared = float(request.headers["X-Work-Ms"])
         except (KeyError, ValueError):
             declared = None
+        self.shadows.on_request(now * 1000.0, gid, declared, client_ip, kind, algo_key, self.emit)
         rec = {"t": now, "ip": client_ip, "base": declared, "kind": kind, "wait": None}
         self.add_trace(rec, now)
         if run:
@@ -267,12 +403,14 @@ class LoadBalancer:
         else:
             server.errors += 1
             self.total_errors += 1
-        self.emit({"e": "f", "id": gid, "s": idx, "ok": ok})
+        self.emit({"e": "f", "id": gid, "s": idx, "ok": ok, "g": algo_key})
         service = parse_service(resp_body) if ok else None
         if rec["base"] is None:
             # Không khai báo thời gian xử lý: lấy thời gian server đo được, quy về server chuẩn (×1)
             rec["base"] = service / server.slow_factor if service is not None else 0.0
+            self.shadows.learn_base(rec["base"])
         rec["wait"] = max(0.0, response_ms - (service or 0.0))
+        self.history.on_finish(segment, ok, rec["wait"], response_ms, server.name)
         if run:
             self.record_finish(run, req_id, idx, end, service, server.open_connections)
 
@@ -365,16 +503,21 @@ class LoadBalancer:
 
     # ---------- Đề xuất thuật toán từ traffic thật ----------
 
+    # Phạm vi so sánh: từ lúc bấm "Bắt đầu gửi" gần nhất (giữ nguyên kết quả sau khi gửi xong,
+    # tới lượt gửi sau mới xóa). Chưa gửi lần nào thì dùng traffic 20 giây gần nhất.
+
     def add_trace(self, rec, now):
         self.trace.append(rec)
         self.trace_seq += 1
-        while self.trace and (now - self.trace[0]["t"] > advisor.WINDOW or len(self.trace) > advisor.MAX_TRACE):
+        while self.trace and (len(self.trace) > advisor.MAX_TRACE or
+                              (self.run is None and now - self.trace[0]["t"] > advisor.WINDOW)):
             self.trace.popleft()
 
     def trace_window(self):
-        now = time.perf_counter()
-        while self.trace and now - self.trace[0]["t"] > advisor.WINDOW:
-            self.trace.popleft()
+        if self.run is None:
+            now = time.perf_counter()
+            while self.trace and now - self.trace[0]["t"] > advisor.WINDOW:
+                self.trace.popleft()
         return [dict(r) for r in self.trace]
 
     @staticmethod
@@ -386,8 +529,14 @@ class LoadBalancer:
             "pending": len(trace) - len(waits),
         }
 
+    def active_cluster(self):
+        """(hệ số chậm, tên) của các server đang bật: advisor mô phỏng đúng cụm hiện tại."""
+        active = [s for s in self.servers if s.enabled]
+        return [s.slow_factor for s in active], [s.name for s in active]
+
     async def advice_loop(self):
         last_seq = -1
+        last_cluster = None
         while True:
             await asyncio.sleep(ADVICE_INTERVAL)
             trace = self.trace_window()
@@ -396,20 +545,31 @@ class LoadBalancer:
                     self.advice = None
                     self.broadcast({"type": "advice", "advice": None})
                 continue
-            # Không có request mới thì chỉ cần cập nhật khi đổi thuật toán
-            if self.trace_seq == last_seq and self.advice and self.advice["current"] == self.algo_key:
+            factors, names = self.active_cluster()
+            # Không có request mới thì chỉ cần cập nhật khi đổi thuật toán hoặc đổi cụm server
+            # (còn request đang chờ thì vẫn tính lại để số "đo thật" cập nhật khi chúng xong)
+            if (self.trace_seq == last_seq and self.advice and self.advice["current"] == self.algo_key
+                    and last_cluster == (factors, names) and not self.advice["real"]["pending"]):
                 continue
             last_seq = self.trace_seq
+            last_cluster = (factors, names)
+            gen = self.trace_gen
             try:
-                result = await self.in_pool(advisor.analyze, trace, self.algo_key, self.real_stats(trace))
+                result = await self.in_pool(advisor.analyze, trace, self.algo_key, self.real_stats(trace),
+                                            factors, names)
             except Exception as exc:  # không để lỗi mô phỏng làm dừng vòng lặp
                 print("[advisor] lỗi:", exc, flush=True)
                 continue
+            if gen != self.trace_gen:
+                continue                      # vừa bắt đầu lượt gửi mới trong lúc đang mô phỏng
             result["current"] = self.algo_key  # thuật toán có thể vừa đổi trong lúc mô phỏng
             result["current_name"] = ALGO_NAMES[self.algo_key]
             best = result["best"]
             result["suggest"] = result["suggest"] and best != self.algo_key
             result["updated_at"] = datetime.now().strftime("%H:%M:%S")
+            run = self.run
+            result["scope"] = {"run_id": run.id, "status": run.status, "completed": run.completed,
+                               "total": run.total} if run else None
             self.advice = result
             self.broadcast({"type": "advice", "advice": result})
 
@@ -417,7 +577,7 @@ class LoadBalancer:
         trace = self.trace_window()
         if len(trace) < advisor.MIN_REQUESTS:
             return None
-        return await self.in_pool(advisor.snapshot, trace)
+        return await self.in_pool(advisor.snapshot, trace, self.active_cluster()[0])
 
     # ---------- Theo dõi ----------
 
@@ -451,12 +611,24 @@ class LoadBalancer:
         except (ConnectionError, RuntimeError):
             self.subscribers.discard(ws)
 
+    def history_message(self):
+        return dict(self.history.snapshot(), type="history")
+
     async def push_loop(self):
-        """Gom sự kiện và đẩy lên trang admin mỗi PUSH_INTERVAL giây (thay vì từng sự kiện)."""
+        """Gom sự kiện và đẩy lên trang admin mỗi PUSH_INTERVAL giây (thay vì từng sự kiện).
+        Lịch sử thay đổi chậm nên chỉ gửi tối đa 1 lần/giây."""
+        sent_version, sent_at = -1, 0.0
         while True:
             await asyncio.sleep(PUSH_INTERVAL)
+            now = time.perf_counter()
+            # Cụm ảo xử lý xong request theo thời gian, kể cả lúc không có request mới
+            self.shadows.advance(now * 1000.0, self.emit)
+            self.history.tick(self.servers, self.run.params["overload_threshold"] if self.run else 5)
             if not self.subscribers:
                 continue
+            if self.history.version != sent_version and now - sent_at >= 1.0:
+                sent_version, sent_at = self.history.version, now
+                self.broadcast(self.history_message())
             msg = self.state()
             msg["type"] = "state"
             msg["events"] = self.pending_events

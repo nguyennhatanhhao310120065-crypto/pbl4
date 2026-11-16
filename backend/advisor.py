@@ -15,8 +15,8 @@ from backend.algorithms import ALGORITHMS, ip_to_server
 from backend.config import DEFAULT_PARAMS, cluster_params, slow_factors
 from backend.simulator import run_all
 
-WINDOW = 20.0          # giây traffic gần nhất dùng để mô phỏng
-MAX_TRACE = 4000       # tối đa số request giữ lại
+WINDOW = 20.0          # chưa bấm "Bắt đầu gửi" lần nào: mô phỏng trên traffic 20 giây gần nhất
+MAX_TRACE = 20000      # tối đa số request giữ lại (= số request lớn nhất của 1 lượt gửi; 10.000 request mô phỏng < 0,5 s)
 MIN_REQUESTS = 20      # ít hơn thì chưa đủ dữ liệu để đánh giá
 # Chỉ đề xuất khi thuật toán tốt nhất giảm chờ TB ít nhất 30% và ít nhất 5 ms (tránh đổi qua lại vì chênh lệch nhỏ)
 MIN_GAIN_RATIO = 0.30
@@ -42,8 +42,13 @@ def build_requests(trace):
     } for i, r in enumerate(trace)]
 
 
-def make_params(requests):
+def make_params(requests, factors=None):
+    """factors: hệ số chậm của các server đang bật (cụm thật hiện tại). None = cụm mặc định trong config."""
     params = dict(DEFAULT_PARAMS, **cluster_params())
+    if factors:
+        slow = [f for f in factors if f != 1]
+        params.update(num_servers=len(factors), factors=list(factors), num_slow_servers=len(slow),
+                      slow_factor=slow[0] if slow else 1)
     params["num_requests"] = len(requests)
     # "Sticky client" của traffic thật = IP gửi nhiều request nhất
     ips = Counter(r["client_ip"] for r in requests)
@@ -58,13 +63,15 @@ def rank(results):
     return sorted(results, key=key)
 
 
-def analyze(trace, current, real):
+def analyze(trace, current, real, factors=None, names=None):
     """Mô phỏng 4 thuật toán trên trace, trả bảng so sánh + đề xuất.
 
     real: số liệu đo thật trong cửa sổ (để hiển thị cạnh số mô phỏng).
+    factors / names: hệ số chậm và tên các server đang bật (mô phỏng theo đúng cụm hiện tại).
     """
     requests = build_requests(trace)
-    params = make_params(requests)
+    params = make_params(requests, factors)
+    names = names or ["s%d" % i for i in range(params["num_servers"])]
     _, results = run_all(params, requests)
     order = rank(results)
     best = order[0]
@@ -98,15 +105,15 @@ def analyze(trace, current, real):
         "gain_pct": round(100.0 * gain / cur["avg_wait"], 1) if cur["avg_wait"] else 0.0,
         "rows": rows,
         "real": real,
-        "slow_servers": slow,
+        "slow_servers": [names[i] for i in slow],
     }
 
 
-def snapshot(trace):
+def snapshot(trace, factors=None):
     """Dữ liệu đầy đủ cho phần phân tích chi tiết: cùng định dạng với /api/simulate
     (phát lại 4 khung, biểu đồ, nhận xét) + so sánh có / không sticky client."""
     requests = build_requests(trace)
-    params = make_params(requests)
+    params = make_params(requests, factors)
     _, results = run_all(params, requests)
 
     # "Không sticky": chia request của sticky IP lần lượt cho các IP khác có trong traffic

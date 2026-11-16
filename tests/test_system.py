@@ -21,6 +21,7 @@ from backend.client import send_all  # noqa: E402
 from backend.config import ADMIN_PASSWORD, ADMIN_USERNAME, DEFAULT_PARAMS, cluster_params  # noqa: E402
 from backend.generator import generate_requests  # noqa: E402
 from backend.load_balancer import LoadBalancer, make_proxy_app  # noqa: E402
+from backend.shadow import Shadows  # noqa: E402
 from backend.simulator import run_all  # noqa: E402
 from backend.web_server import Worker, make_app  # noqa: E402
 
@@ -137,6 +138,29 @@ class TestLoadBalancer(unittest.IsolatedAsyncioTestCase):
         await proxy.close()
         self.assertEqual(seen, ["s0", "s1", "s2", "s3"] * 2)
 
+    async def test_disable_and_slow_factor(self):
+        # Tắt s0 -> Round Robin chỉ xoay vòng s1..s3; đổi s1 thành ×3 -> Web Server xử lý lâu gấp 3
+        lb, proxy = await make_lb(self.urls, "rr")
+        lb.set_enabled(0, False)
+        await lb.set_slow_factor(1, 3)
+        seen, service = [], {}
+        async with aiohttp.ClientSession() as s:
+            for _ in range(6):
+                async with s.get(proxy.make_url("/work"), headers={"X-Work-Ms": "10"}) as r:
+                    name = r.headers["X-Upstream-Server"]
+                    seen.append(name)
+                    service[name] = (await r.json())["service_ms"]
+        with self.assertRaises(Exception):
+            for i in (1, 2, 3):
+                lb.set_enabled(i, False)  # tắt nốt server cuối cùng còn bật -> lỗi
+        self.assertEqual(lb.cluster_params()["factors"], [1, 3, 1, 2])
+        snap = lb.shadows.snapshot()["lc"]
+        self.assertFalse(snap[0]["enabled"])
+        await lb.stop()
+        await proxy.close()
+        self.assertEqual(seen, ["s1", "s2", "s3"] * 2)
+        self.assertAlmostEqual(service["s1"], 30, delta=5)
+
     async def test_iphash_sticky(self):
         lb, proxy = await make_lb(self.urls, "iphash")
         seen = set()
@@ -226,6 +250,103 @@ class TestAdvisor(unittest.TestCase):
         self.assertEqual(advisor.build_requests(trace)[1]["base_service_time"], 10.0)
 
 
+class TestShadow(unittest.TestCase):
+    def test_matches_simulator(self):
+        # Mô phỏng trực tiếp trên luồng request phải chia server giống hệt engine mô phỏng
+        params = dict(DEFAULT_PARAMS, **cluster_params())
+        reqs, results = run_all(params)
+        shadows = Shadows([1, 1, 1, 2])
+        events = []
+        for r in reqs:
+            shadows.on_request(r["arrival_time"], r["id"], r["base_service_time"], r["client_ip"], r["kind"],
+                               None, events.append)
+        shadows.advance(float("inf"), events.append)
+        for key, res in results.items():
+            got = {e["id"]: e["s"] for e in events if e["g"] == key and e["e"] == "a"}
+            self.assertEqual(got, {a["request_id"]: a["server"] for a in res["assignments"]}, key)
+            self.assertEqual(sum(1 for e in events if e["g"] == key and e["e"] == "f"), len(reqs))
+
+    def test_disabled_server_gets_nothing(self):
+        shadows = Shadows([1, 1, 1])
+        shadows.set_enabled(1, False)
+        events = []
+        for i in range(30):
+            shadows.on_request(i * 1.0, i, 5.0, "ip%d" % i, "light", None, events.append)
+        self.assertNotIn(1, set(e["s"] for e in events if e["e"] == "a"))
+        shadows.add_server(2)
+        shadows.on_request(100.0, 99, 5.0, "x", "light", None, events.append)
+        self.assertEqual(len(shadows.snapshot()["rr"]), 4)
+        shadows.remove_last()
+        self.assertEqual(len(shadows.snapshot()["rr"]), 3)
+
+    def test_current_algorithm_not_emitted(self):
+        shadows = Shadows([1, 2])
+        events = []
+        shadows.on_request(0.0, 1, 10.0, "1.1.1.1", "light", "rr", events.append)
+        self.assertEqual(sorted(e["g"] for e in events), ["iphash", "lc", "lrt"])
+        snap = shadows.snapshot()
+        self.assertEqual(sum(s["open"] for s in snap["rr"]), 1)  # vẫn được mô phỏng, chỉ không phát sự kiện
+
+
+class TestHistory(unittest.TestCase):
+    def test_segments_per_algorithm(self):
+        from backend.history import History
+        h = History("rr")
+        ref = h.on_arrival("s0", 0.0)
+        h.on_finish(ref, True, 100.0, 110.0)
+        late = h.on_arrival("s0", 0.5)
+        h.start_segment("lc", "advice", 1.0)
+        ref2 = h.on_arrival("s1", 1.1)
+        h.on_finish(late, True, 50.0, 60.0)   # request của RR xong sau khi đổi vẫn tính cho RR
+        h.on_finish(ref2, True, 10.0, 20.0)
+        servers = {x["name"]: x for x in h.snapshot()["segments"][0]["servers"]}
+        self.assertEqual(servers["s0"]["count"], 2)
+        h.start_segment("iphash", "manual", 2.0)   # giai đoạn rỗng sẽ bị bỏ khi đổi tiếp
+        h.start_segment("lrt", "manual", 3.0)
+        segs = h.snapshot()["segments"]
+        self.assertEqual([s["algo"] for s in segs], ["rr", "lc", "lrt"])
+        self.assertEqual(segs[0]["avg_wait"], 75.0)
+        self.assertEqual(segs[0]["count"], 2)
+        self.assertEqual(segs[1]["avg_wait"], 10.0)
+        self.assertEqual(segs[1]["source"], "advice")
+
+    def test_queue_counts_only_own_requests(self):
+        # Hàng đợi RR để lại không bị tính cho giai đoạn LC
+        from backend.history import History
+        h = History("rr")
+        refs = [h.on_arrival("s3", 0.0) for _ in range(8)]       # RR dồn 8 request vào s3 (>= ngưỡng 5)
+        h.start_segment("lc", "advice", 1.0)
+        lc = h.on_arrival("s3", 1.1)
+        for r in refs:
+            h.on_finish(r, True, 1.0, 2.0, "s3")
+        h.on_finish(lc, True, 1.0, 2.0, "s3")
+        rr_seg, lc_seg = h.snapshot()["segments"]
+        self.assertEqual(rr_seg["servers"][0]["max_open"], 8)
+        self.assertEqual(rr_seg["overloads"], 1)
+        self.assertEqual(lc_seg["servers"][0]["max_open"], 1)
+        self.assertEqual(lc_seg["overloads"], 0)
+
+
+class TestRunScope(unittest.TestCase):
+    def test_new_run_resets_comparison(self):
+        lb = LoadBalancer("rr")
+        for i in range(30):
+            lb.add_trace({"t": float(i), "ip": "a", "base": 5.0, "kind": "light", "wait": 1.0}, float(i))
+        lb.shadows.on_request(0.0, 1, 5.0, "a", "light", "rr", lambda e: None)
+        lb.advice = {"current": "rr"}
+        lb.set_enabled(0, False)
+        params = dict(DEFAULT_PARAMS, num_requests=10, **cluster_params())
+        lb.begin_run(1, "lc", params)
+        self.assertEqual(len(lb.trace), 0)
+        self.assertIsNone(lb.advice)
+        snap = lb.shadows.snapshot()["rr"]
+        self.assertEqual(sum(x["open"] for x in snap), 0)
+        self.assertFalse(snap[0]["enabled"])       # giữ trạng thái bật / tắt
+        # Sau khi gửi xong, kết quả không hết hạn theo 20 giây
+        lb.add_trace({"t": 0.0, "ip": "a", "base": 5.0, "kind": "light", "wait": 1.0}, 0.0)
+        self.assertEqual(len(lb.trace_window()), 1)
+
+
 class TestAdmin(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.lb = LoadBalancer()
@@ -266,6 +387,19 @@ class TestAdmin(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await r.json())["algorithm"], "lrt")
         r = await self.client.post("/api/lb/algorithm", json={"algorithm": "xyz"})
         self.assertEqual(r.status, 400)
+
+    async def test_server_controls(self):
+        await self.login()
+        r = await self.client.post("/api/servers/0", json={"enabled": False})
+        self.assertEqual(r.status, 200)
+        self.assertFalse((await r.json())["servers"][0]["enabled"])
+        r = await self.client.post("/api/servers/9", json={"enabled": False})
+        self.assertEqual(r.status, 409)
+        r = await self.client.post("/api/servers/0", json={"slow_factor": 7})
+        self.assertEqual(r.status, 409)  # không nằm trong danh sách hệ số cho phép
+        r = await self.client.delete("/api/servers")
+        self.assertEqual(r.status, 200)
+        self.assertEqual(len((await r.json())["servers"]), 3)
 
 
 if __name__ == "__main__":

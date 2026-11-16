@@ -14,6 +14,8 @@ Mô hình xử lý (khớp với engine mô phỏng):
 API:
   GET /work      header X-Work-Ms = thời gian xử lý gốc (ms). Trả JSON thời gian chờ/xử lý.
   GET /health    trạng thái server.
+  POST /config   {"slow_factor": 2} đổi hệ số chậm khi đang chạy (Load Balancer gọi khi admin chỉnh).
+                 Request đã vào hàng đợi giữ thời gian xử lý cũ, chỉ request mới dùng hệ số mới.
   GET /          dòng chữ cho biết server nào đã phục vụ (để thử LB trên trình duyệt).
 """
 
@@ -98,6 +100,19 @@ class Worker:
         })
 
 
+    async def handle_config(self, request):
+        try:
+            data = await request.json()
+            factor = float(data["slow_factor"])
+        except (ValueError, KeyError, TypeError):
+            return web.json_response({"error": "Cần JSON {\"slow_factor\": số}"}, status=400)
+        if not 0.1 <= factor <= 20:
+            return web.json_response({"error": "slow_factor phải trong [0.1, 20]"}, status=400)
+        self.slow_factor = factor
+        print("[%s] đổi hệ số chậm thành ×%g" % (self.name, factor), flush=True)
+        return await self.handle_health(request)
+
+
 TASK_KEY = web.AppKey("worker_task")
 
 
@@ -106,6 +121,7 @@ def make_app(worker):
     app.router.add_get("/", worker.handle_index)
     app.router.add_get("/work", worker.handle_work)
     app.router.add_get("/health", worker.handle_health)
+    app.router.add_post("/config", worker.handle_config)
 
     async def on_startup(app):
         worker.queue = asyncio.Queue()

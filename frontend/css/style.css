@@ -157,31 +157,7 @@ input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: 0
 .status { color: var(--text-2); }
 .status.error { color: var(--danger); }
 
-/* ===== Khu vực phát lại ===== */
-.player {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.speed {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: auto;
-  color: var(--text-2);
-}
-.speed select { width: auto; }
-
-.timeline {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 12px 0 16px;
-}
-.timeline input { flex: 1; padding: 0; accent-color: var(--primary); }
-.timeline span { color: var(--text-2); min-width: 150px; text-align: right; }
-
+/* ===== Sơ đồ ===== */
 .sim-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -274,53 +250,13 @@ td .swatch {
 }
 th .sub { display: block; font-weight: 400; color: var(--text-muted); font-size: 0.78rem; }
 
-.chart-card {
-  margin-top: 20px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-.chart-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.chart-box { position: relative; height: 320px; }
-.chart-box.small { height: 280px; }
-.chart-pair {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 18px;
-}
-
-.tabs { display: flex; gap: 4px; background: var(--bg); padding: 3px; border-radius: 8px; }
-.tab {
-  background: transparent;
-  border: none;
-  color: var(--text-2);
-  padding: 5px 12px;
-  font-size: 0.88rem;
-}
-.tab.active { background: var(--surface-2); color: var(--text); }
-
-/* ===== Nhận xét ===== */
-#analysis-text ul { padding-left: 20px; margin: 6px 0 18px; }
-#analysis-text li { margin-bottom: 8px; }
-#analysis-text .algo-name { font-weight: 600; }
-#analysis-text .theory { color: var(--text-2); }
-table.reco td, table.reco th { text-align: left; white-space: normal; }
-
 /* ===== Màn hình hẹp ===== */
 @media (max-width: 960px) {
   #param-form { grid-template-columns: 1fr; }
   .sim-grid { grid-template-columns: 1fr; }
-  .chart-pair { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) {
   #param-form label { grid-template-columns: 1fr 120px; }
-  .speed { margin-left: 0; }
-  .timeline span { min-width: 0; }
 }
 
 /* ===== Trang admin ===== */
@@ -336,15 +272,6 @@ table.reco td, table.reco th { text-align: left; white-space: normal; }
   z-index: 10;
 }
 .brand { font-weight: 700; letter-spacing: 0.02em; }
-.nav { display: flex; gap: 4px; flex: 1; flex-wrap: wrap; }
-.nav a {
-  color: var(--text-2);
-  text-decoration: none;
-  padding: 6px 12px;
-  border-radius: 8px;
-}
-.nav a:hover { color: var(--text); background: var(--surface-2); }
-.nav a.active { color: var(--text); background: var(--surface-2); font-weight: 600; }
 
 a { color: var(--primary); }
 code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; }
@@ -429,8 +356,6 @@ td.empty { text-align: center; color: var(--text-muted); padding: 18px; }
 @media (max-width: 520px) {
   .topbar { flex-wrap: wrap; gap: 8px; }
 }
-#rank-table td:nth-child(2), #rank-table th:nth-child(2) { text-align: left; }
-#runs-table td:nth-child(3), #runs-table th:nth-child(3) { text-align: left; }
 
 /* ===== Tổng quan: điều khiển ===== */
 main { padding-top: 4px; }
@@ -501,7 +426,6 @@ td.bar-col, th.bar-col { text-align: left; min-width: 220px; }
 /* ===== Tổng quan: khung trực tiếp ===== */
 .mt { margin-top: 20px; }
 .topbar .badge { white-space: nowrap; }
-#runs-table td:nth-child(3) { white-space: normal; min-width: 150px; }
 .quick-run {
   display: flex;
   flex-wrap: wrap;
@@ -512,3 +436,141 @@ td.bar-col, th.bar-col { text-align: left; min-width: 220px; }
 }
 .quick-run .label { color: var(--text-2); font-weight: 600; }
 .quick-run input { width: 110px; }
+
+/* ===== Trang duy nhất: thanh trên, tham số gửi ===== */
+.topbar-spacer { flex: 1; }
+details.params { border-top: 1px solid var(--border); padding-top: 10px; }
+details.params summary { cursor: pointer; color: var(--text-2); font-weight: 600; margin-bottom: 10px; }
+details.params fieldset .btn-ghost { margin-top: 6px; }
+
+/* ===== 4 sơ đồ thuật toán ===== */
+.algo-grid .sim-panel {
+  border: 2px solid var(--border);
+  border-top-width: 4px;
+  border-top-color: var(--algo-color);
+  transition: box-shadow 0.2s, border-color 0.2s, opacity 0.2s;
+  opacity: 0.82;
+}
+/* Thuật toán đang chạy: viền trắng đậm (không trùng màu xanh "tối ưu"), dải màu thuật toán vẫn giữ ở trên */
+.algo-grid .sim-panel.is-current {
+  border: 4px solid var(--text);
+  border-top: 8px solid var(--algo-color);
+  background: var(--surface-2);
+  opacity: 1;
+}
+/* Thuật toán tối ưu nhất: vòng sáng xanh bên ngoài (đi chung được với viền "đang chạy") */
+.algo-grid .sim-panel.is-best {
+  opacity: 1;
+  box-shadow: 0 0 0 4px var(--ok), 0 0 26px 6px rgba(47, 191, 113, 0.45);
+}
+.algo-grid .sim-panel.is-urgent { animation: best-pulse 1.6s ease-in-out infinite; }
+@keyframes best-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px var(--ok), 0 0 14px 2px rgba(47, 191, 113, 0.35); }
+  50% { box-shadow: 0 0 0 4px var(--ok), 0 0 34px 10px rgba(47, 191, 113, 0.6); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .algo-grid .sim-panel.is-urgent { animation: none; }
+}
+
+.sim-tags { display: inline-flex; gap: 6px; margin-right: auto; margin-left: 4px; }
+.mark {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.mark-current { background: var(--text); color: var(--bg); }
+.mark-best { background: var(--ok); color: #0b2a18; }
+
+.sim-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 36px;
+  margin-top: 4px;
+  font-size: 0.88rem;
+  color: var(--text-2);
+}
+.sim-foot b { color: var(--text); }
+.btn-switch { background: var(--ok); border-color: var(--ok); color: #0b2a18; padding: 5px 12px; }
+
+.mark-legend { margin: 0 0 14px; }
+.mark-sample { width: 26px; height: 18px; border-radius: 4px; display: inline-block; background: var(--surface-2); }
+.mark-sample.mark-current { border: 3px solid var(--text); background: var(--surface-2); }
+.mark-sample.mark-best { border: 1px solid var(--border); box-shadow: 0 0 0 3px var(--ok), 0 0 10px 2px rgba(47, 191, 113, 0.5); }
+
+@media (max-width: 520px) {
+  .algo-grid .sim-panel { padding: 8px; }
+}
+.algo-grid .sim-head { flex-wrap: nowrap; align-items: center; min-height: 26px; }
+.algo-grid .sim-head .info { display: none; }
+
+/* ===== Bảng Web Server có ô chỉnh ===== */
+.server-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.factor-select { width: auto; padding: 3px 6px; }
+tr.server-off td { color: var(--text-muted); }
+.box-off { border-style: dashed; color: var(--text-2); font-size: 0.6rem; opacity: 0.7; }
+
+/* ===== Lịch sử chuyển thuật toán ===== */
+.hist-headline {
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--bg);
+  border-left: 4px solid var(--text-muted);
+  color: var(--text-2);
+}
+.hist-headline b { color: var(--text); }
+.hist-headline.good { border-left-color: var(--ok); }
+.hist-headline.bad { border-left-color: var(--danger); }
+.delta-good { color: var(--ok); font-weight: 600; }
+.delta-bad { color: var(--danger); font-weight: 600; }
+#hist-table td:nth-child(2), #hist-table th:nth-child(2) { text-align: left; }
+.chart-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; background: var(--bg); padding: 3px; border-radius: 8px; flex-wrap: wrap; }
+.tab { background: transparent; border: none; color: var(--text-2); padding: 5px 12px; font-size: 0.88rem; }
+.tab.active { background: var(--surface-2); color: var(--text); }
+
+.warn-banner { border-left: 6px solid var(--danger); background: rgba(229, 72, 77, 0.1); color: var(--text); }
+.warn-banner code { background: var(--bg); padding: 1px 6px; border-radius: 4px; }
+
+/* Lịch sử: dãy sơ đồ theo giai đoạn */
+.hist-flow { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; }
+.seg-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-top: 4px solid var(--algo-color, var(--primary));
+  border-radius: 8px;
+  padding: 10px 12px;
+  position: relative;
+}
+.seg-card.is-live { border-color: var(--text); border-top-color: var(--algo-color); }
+/* Mũi tên giữa 2 giai đoạn liền nhau */
+.seg-card + .seg-card::before {
+  content: "→";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-2);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+.seg-head { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 0.85rem; color: var(--text-2); }
+.seg-step { font-weight: 700; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.78rem; }
+.seg-card .sim-panel { background: transparent; border: none; padding: 0; }
+.seg-card .sim-head .info { display: inline; }
+.seg-stats { display: flex; justify-content: space-around; gap: 6px; flex-wrap: wrap; font-size: 0.8rem; color: var(--text-2); margin-top: 2px; }
+.seg-stat b { color: var(--text); margin-right: 2px; }
+.seg-stat.over b { color: var(--danger); }
+.seg-foot { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 0.88rem; color: var(--text-2); }
+.seg-foot b { color: var(--text); }
+.seg-legend { margin-top: 12px; }
+.share-sample { width: 26px; height: 6px; border-radius: 3px; background: var(--primary); opacity: 0.6; display: inline-block; }
+@media (max-width: 520px) { .hist-flow { grid-template-columns: 1fr; } .seg-card + .seg-card::before { display: none; } }
