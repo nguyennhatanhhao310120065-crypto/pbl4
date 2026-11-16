@@ -334,11 +334,14 @@ class TestRunScope(unittest.TestCase):
             lb.add_trace({"t": float(i), "ip": "a", "base": 5.0, "kind": "light", "wait": 1.0}, float(i))
         lb.shadows.on_request(0.0, 1, 5.0, "a", "light", "rr", lambda e: None)
         lb.advice = {"current": "rr"}
+        lb.history.on_arrival("s0", 0.0)          # lượt gửi trước có lịch sử Round Robin
         lb.set_enabled(0, False)
         params = dict(DEFAULT_PARAMS, num_requests=10, **cluster_params())
         lb.begin_run(1, "lc", params)
         self.assertEqual(len(lb.trace), 0)
         self.assertIsNone(lb.advice)
+        segs = lb.history.snapshot()["segments"]
+        self.assertEqual([(x["algo"], x["source"], x["count"]) for x in segs], [("lc", "run", 0)])
         snap = lb.shadows.snapshot()["rr"]
         self.assertEqual(sum(x["open"] for x in snap), 0)
         self.assertFalse(snap[0]["enabled"])       # giữ trạng thái bật / tắt

@@ -117,9 +117,9 @@ class History:
         self.next_id += 1
         self.version += 1
 
-    def clear(self, algo):
+    def clear(self, algo, source="start"):
         self.segments.clear()
-        self.start_segment(algo, "start")
+        self.start_segment(algo, source)
 
     # Hàng đợi / quá tải của giai đoạn chỉ đếm request do CHÍNH thuật toán đó chia (không tính hàng đợi
     # thuật toán trước để lại), để sơ đồ mỗi giai đoạn phản ánh đúng cách chia của thuật toán đó.

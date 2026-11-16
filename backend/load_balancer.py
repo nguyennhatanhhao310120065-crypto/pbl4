@@ -308,7 +308,7 @@ class LoadBalancer:
         self.set_algorithm(algorithm)
         self.algorithm = make_algorithm(algorithm)  # luôn bắt đầu từ trạng thái sạch
         self.reset_counters()
-        self.history.start_segment(algorithm, "run")  # mỗi lượt gửi là 1 giai đoạn mới trong lịch sử
+        self.history.clear(algorithm, "run")  # mỗi lượt gửi có lịch sử riêng, bắt đầu lại từ giai đoạn 1
         self.run = Run(run_id, algorithm, params)
         # Phần so sánh 4 thuật toán + 4 sơ đồ bắt đầu lại từ đầu cho lượt gửi mới
         self.trace.clear()
@@ -317,6 +317,7 @@ class LoadBalancer:
         self.shadows = self.new_shadows()
         self.advice = None
         self.broadcast({"type": "advice", "advice": None})
+        self.broadcast(self.history_message())
         return self.run
 
     def new_shadows(self):

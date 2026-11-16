@@ -109,7 +109,8 @@ trong 20 giây gần nhất được viền xanh phát sáng, nhãn **TỐI ƯU 
 (ghi rõ chọn tay hay theo đề xuất). Mỗi giai đoạn là 1 sơ đồ Load Balancer cho thấy LB đã chia request cho các server
 thế nào: đường nối LB → server dày theo % request, số request mỗi server, chờ TB, hàng đợi lớn nhất và thời gian quá tải
 từng server. Đổi thuật toán thì thêm sơ đồ mới bên cạnh (giai đoạn 1 → giai đoạn 2), kèm dòng tóm tắt (VD: Round Robin →
-Least Connections, chờ TB 924 ms → 74 ms, giảm 92%) và bảng so sánh các giai đoạn. Request, hàng đợi và quá tải được tính
+Least Connections, chờ TB 924 ms → 74 ms, giảm 92%) và bảng so sánh các giai đoạn. Mỗi lần bấm **Bắt đầu gửi**,
+lịch sử bắt đầu lại từ giai đoạn 1. Request, hàng đợi và quá tải được tính
 cho thuật toán đã chia request đó, nên hàng đợi thuật toán cũ để lại không bị tính cho thuật toán mới. Lịch sử giữ trong
 bộ nhớ (30 giai đoạn gần nhất), mất khi tắt chương trình.
 
