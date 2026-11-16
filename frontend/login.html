@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Đăng nhập · LB Admin</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="login-page">
+  <form class="card login-card" id="login-form" autocomplete="on">
+    <h1>LB Admin</h1>
+    <p class="hint">Hệ thống cân bằng tải — đăng nhập quản trị</p>
+    <label>Tên đăng nhập
+      <input type="text" name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>Mật khẩu
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="btn-primary">Đăng nhập</button>
+    <p id="status" class="status" role="status"></p>
+  </form>
+<script src="/js/common.js"></script>
+<script>
+  document.getElementById("login-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    const status = document.getElementById("status");
+    const btn = f.querySelector("button");
+    btn.disabled = true;
+    try {
+      await Api.post("/api/login", { username: f.username.value, password: f.password.value });
+      window.location.href = "/dashboard.html";
+    } catch (err) {
+      setStatus(status, err.message, true);
+      btn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

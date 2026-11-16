@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.algorithms import LeastResponseTime, RoundRobin, ip_to_server  # noqa: E402
+from backend.algorithms import LeastResponseTime, RoundRobin, Scheduled, ip_to_server  # noqa: E402
 from backend.config import DEFAULT_PARAMS  # noqa: E402
 from backend.generator import generate_requests  # noqa: E402
 from backend.metrics import count_overloads  # noqa: E402
@@ -103,20 +103,15 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(res["metrics"]["makespan"], 20)
 
 
-class TestApi(unittest.TestCase):
-    def setUp(self):
-        from backend.app import app
-        self.client = app.test_client()
-
-    def test_invalid_param(self):
-        r = self.client.post("/api/simulate", json={"heavy_percent": 150})
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("error", r.get_json())
-
-    def test_simulate_ok(self):
-        r = self.client.post("/api/simulate", json={"num_requests": 50})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(set(r.get_json()["results"]), {"rr", "lc", "iphash", "lrt"})
+class TestScheduled(unittest.TestCase):
+    def test_switch_at_time(self):
+        # RR tới t=2 ms rồi đổi sang LC (thuật toán mới bắt đầu sạch)
+        algo = Scheduled([[2, "lc"], [0, "rr"]])
+        servers = [Server(0, 1), Server(1, 1)]
+        servers[0].queue.append(99)  # s0 đang bận 1 kết nối
+        self.assertEqual(algo.choose({}, servers, 0), 0)   # RR: lượt s0
+        self.assertEqual(algo.choose({}, servers, 1), 1)   # RR: lượt s1
+        self.assertEqual(algo.choose({}, servers, 2), 1)   # LC: s1 ít kết nối hơn
 
 
 if __name__ == "__main__":

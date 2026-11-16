@@ -1,16 +1,8 @@
-// Vẽ 4 khung mô phỏng trên Canvas và phát lại (replay) theo 1 đồng hồ chung.
-// Trạng thái tại thời điểm t được tính lại hoàn toàn từ events/assignments,
-// nên tua tới/lui bất kỳ lúc nào cũng đúng, không cần gọi lại API.
-
-// Đọc màu từ biến CSS (:root) để canvas và CSS dùng chung 1 bảng màu.
-// Cache lại vì getComputedStyle khá chậm khi gọi mỗi khung hình.
-const colorCache = {};
-function cssVar(name) {
-  if (!(name in colorCache)) {
-    colorCache[name] = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  }
-  return colorCache[name];
-}
+// Vẽ khung "Load Balancer → các server" trên Canvas.
+//  - SimPanel : phát lại (replay) 1 lượt chạy từ log events/assignments (mô phỏng hoặc chạy thật).
+//               Trạng thái tại thời điểm t được tính lại hoàn toàn từ log nên tua tới/lui luôn đúng.
+//  - LivePanel: vẽ trạng thái LB thật theo thời gian thực từ WebSocket.
+//  - Player   : 1 đồng hồ chung điều khiển nhiều SimPanel chạy song song.
 
 const CANVAS_W = 560;
 const CANVAS_H = 290;
@@ -23,21 +15,12 @@ const BAR_W = 8;
 const DOT_R = 4.5;
 const MAX_QUEUE_DOTS = 12; // số chấm tối đa vẽ trong ô, còn lại ghi "+k"
 
-class SimPanel {
-  constructor(container, algo, data) {
-    this.key = algo.key;
-    this.name = algo.name;
-    this.params = data.params;
-    this.result = data.results[algo.key];
-    this.requests = data.requests;
-    this.color = cssVar("--algo-" + algo.key);
-
-    // Server yếu là các server cuối (giống backend config.slow_factors)
-    const n = this.params.num_servers;
-    const k = Math.min(this.params.num_slow_servers, n - 1);
-    this.isSlow = [];
-    for (let i = 0; i < n; i++) this.isSlow.push(i >= n - k);
-
+class PanelBase {
+  // slowFactors: hệ số chậm từng server (1 = bình thường)
+  constructor(container, name, color, slowFactors) {
+    this.name = name;
+    this.color = color;
+    this.factors = slowFactors;
     this.buildDom(container);
     this.computeLayout();
   }
@@ -52,7 +35,8 @@ class SimPanel {
       '  <span class="info mono"></span>' +
       "</div>" +
       "<canvas></canvas>";
-    panel.querySelector(".name").textContent = this.name;
+    this.nameEl = panel.querySelector(".name");
+    this.nameEl.textContent = this.name;
     this.infoEl = panel.querySelector(".info");
 
     this.canvas = panel.querySelector("canvas");
@@ -62,16 +46,17 @@ class SimPanel {
     this.ctx = this.canvas.getContext("2d");
     this.ctx.scale(dpr, dpr);
     container.appendChild(panel);
+    this.el = panel;
   }
 
   // Tính vị trí ô của từng server (chia đều theo chiều ngang)
   computeLayout() {
-    const n = this.params.num_servers;
+    const n = this.factors.length;
     const slotW = CANVAS_W / n;
     const scaleAll = Math.min(1, (slotW - 26) / BOX_W); // nhiều server thì thu nhỏ
     this.boxes = [];
     for (let i = 0; i < n; i++) {
-      const s = scaleAll * (this.isSlow[i] ? SLOW_SCALE : 1);
+      const s = scaleAll * (this.factors[i] !== 1 ? SLOW_SCALE : 1);
       const w = BOX_W * s;
       const h = BOX_H * s;
       const cx = slotW * (i + 0.5) - (BAR_W + 6) / 2;
@@ -79,34 +64,9 @@ class SimPanel {
     }
   }
 
-  // Trạng thái server tại thời điểm t, tính từ log events
-  stateAt(t) {
-    const n = this.params.num_servers;
-    const open = new Array(n).fill(0);
-    const done = new Array(n).fill(0);
-    for (const e of this.result.events) {
-      if (e.t > t) break; // events đã được sắp xếp theo thời gian
-      open[e.server] = e.open_connections_after;
-      if (e.type === "FINISH") done[e.server] += 1;
-    }
-    return { open: open, done: done };
-  }
-
-  draw(t, flySim) {
+  drawGate() {
     const ctx = this.ctx;
-    const threshold = this.params.overload_threshold;
-    const st = this.stateAt(t);
-    const totalDone = st.done.reduce((a, b) => a + b, 0);
-    const total = this.requests.length;
-
-    // Thông tin trên đầu khung
-    let info = "t = " + t.toFixed(0) + " ms · Xong " + totalDone + "/" + total;
-    if (totalDone === total) info += " ✓";
-    this.infoEl.textContent = info;
-
     ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-
-    // Cổng vào (load balancer)
     ctx.fillStyle = cssVar("--surface-2");
     ctx.strokeStyle = this.color;
     ctx.lineWidth = 1.5;
@@ -118,36 +78,10 @@ class SimPanel {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("Load Balancer", GATE.x + GATE.w / 2, GATE.y + GATE.h / 2);
-
-    // Request đang ở trong từng server (đang xử lý + chờ), theo thứ tự đến
-    const inServer = this.params.num_servers;
-    const queues = [];
-    for (let i = 0; i < inServer; i++) queues.push([]);
-    const flying = [];
-    for (const a of this.result.assignments) {
-      if (a.arrival > t) continue;
-      if (t - a.arrival < flySim) flying.push(a);
-      else if (t < a.finish) queues[a.server].push(a);
-    }
-
-    for (let i = 0; i < inServer; i++) {
-      this.drawServer(i, st.open[i], st.done[i], queues[i], threshold);
-    }
-
-    // Chấm bay từ cổng xuống ô server
-    for (const a of flying) {
-      const p = (t - a.arrival) / flySim;
-      const ease = 1 - Math.pow(1 - p, 2);
-      const b = this.boxes[a.server];
-      const x0 = GATE.x + GATE.w / 2;
-      const y0 = GATE.y + GATE.h;
-      const x = x0 + (b.cx - x0) * ease;
-      const y = y0 + (b.y - 4 - y0) * ease;
-      this.drawDot(x, y, this.requests[a.request_id]);
-    }
   }
 
-  drawServer(i, open, done, queue, threshold) {
+  // queue: danh sách request {kind, client_ip} đang nằm trong server (chấm đầu là đang xử lý)
+  drawServer(i, open, done, queue, threshold, stickyIp, down) {
     const ctx = this.ctx;
     const b = this.boxes[i];
     const overloaded = open >= threshold;
@@ -155,11 +89,13 @@ class SimPanel {
 
     // Ô server: chuyển đỏ khi quá tải
     ctx.fillStyle = overloaded ? "rgba(229, 72, 77, 0.35)" : cssVar("--surface-2");
-    ctx.strokeStyle = overloaded ? danger : cssVar("--border");
+    ctx.strokeStyle = overloaded || down ? danger : cssVar("--border");
     ctx.lineWidth = overloaded ? 2 : 1;
+    if (down) ctx.setLineDash([4, 3]);
     roundRect(ctx, b.x, b.y, b.w, b.h, 8);
     ctx.fill();
     ctx.stroke();
+    ctx.setLineDash([]);
 
     // Nhãn tên server + hệ số chậm
     ctx.textBaseline = "top";
@@ -167,29 +103,27 @@ class SimPanel {
     ctx.font = "600 12px system-ui, sans-serif";
     ctx.fillStyle = cssVar("--text-2");
     ctx.fillText("s" + i, b.x + 7, b.y + 6);
-    if (this.isSlow[i]) {
+    if (this.factors[i] !== 1) {
       ctx.textAlign = "right";
       ctx.fillStyle = cssVar("--req-heavy");
-      ctx.fillText("×" + this.params.slow_factor, b.x + b.w - 7, b.y + 6);
+      ctx.fillText("×" + this.factors[i], b.x + b.w - 7, b.y + 6);
     }
 
-    // Số request đã xử lý xong
+    // Số request đã xử lý xong (server mất kết nối thì ghi "OFF")
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillStyle = cssVar("--text");
+    ctx.fillStyle = down ? danger : cssVar("--text");
     ctx.font = "700 " + Math.round(b.h * 0.26) + "px system-ui, sans-serif";
-    ctx.fillText(String(done), b.cx, b.y + b.h * 0.42);
+    ctx.fillText(down ? "OFF" : String(done), b.cx, b.y + b.h * 0.42);
 
-    // Các chấm nhỏ = request đang trong server (chấm đầu là đang xử lý)
     const r = 3;
     const perRow = Math.max(1, Math.floor((b.w - 10) / (r * 2 + 3)));
-    const shown = queue.slice(0, MAX_QUEUE_DOTS);
-    shown.forEach((a, k) => {
+    queue.slice(0, MAX_QUEUE_DOTS).forEach((req, k) => {
       const row = Math.floor(k / perRow);
       const col = k % perRow;
       const x = b.x + 8 + r + col * (r * 2 + 3);
       const y = b.y + b.h * 0.68 + row * (r * 2 + 3);
-      this.drawDot(x, y, this.requests[a.request_id], r);
+      this.drawDot(x, y, req, stickyIp, r);
     });
     if (queue.length > MAX_QUEUE_DOTS) {
       ctx.font = "600 10px system-ui, sans-serif";
@@ -230,19 +164,137 @@ class SimPanel {
     ctx.fillText(String(open), barX + BAR_W / 2, b.y - 3);
   }
 
+  // Chấm bay từ cổng xuống ô server, p = tiến độ 0..1
+  drawFlying(server, p, req, stickyIp) {
+    const ease = 1 - Math.pow(1 - p, 2);
+    const b = this.boxes[server];
+    const x0 = GATE.x + GATE.w / 2;
+    const y0 = GATE.y + GATE.h;
+    this.drawDot(x0 + (b.cx - x0) * ease, y0 + (b.y - 4 - y0) * ease, req, stickyIp);
+  }
+
   // Chấm trắng = nhẹ, cam = nặng, viền tím = sticky client
-  drawDot(x, y, req, radius) {
+  drawDot(x, y, req, stickyIp, radius) {
     const ctx = this.ctx;
     const r = radius || DOT_R;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fillStyle = req.kind === "heavy" ? cssVar("--req-heavy") : cssVar("--req-light");
     ctx.fill();
-    if (req.client_ip === this.params.sticky_ip) {
+    if (req.client_ip === stickyIp) {
       ctx.lineWidth = r > 3 ? 2 : 1.5;
       ctx.strokeStyle = cssVar("--sticky");
       ctx.stroke();
     }
+  }
+}
+
+function factorsFromParams(params) {
+  const slow = slowServers(params);
+  const out = [];
+  for (let i = 0; i < params.num_servers; i++) out.push(slow.indexOf(i) >= 0 ? params.slow_factor : 1);
+  return out;
+}
+
+// data: { params, requests, results: { [key]: { assignments, events, metrics } } }
+class SimPanel extends PanelBase {
+  constructor(container, algo, data, title) {
+    super(container, title || algo.name, cssVar("--algo-" + algo.key), factorsFromParams(data.params));
+    this.params = data.params;
+    this.result = data.results[algo.key];
+    this.requests = data.requests;
+  }
+
+  // Trạng thái server tại thời điểm t, tính từ log events
+  stateAt(t) {
+    const n = this.params.num_servers;
+    const open = new Array(n).fill(0);
+    const done = new Array(n).fill(0);
+    for (const e of this.result.events) {
+      if (e.t > t) break; // events đã được sắp xếp theo thời gian
+      open[e.server] = e.open_connections_after;
+      if (e.type === "FINISH") done[e.server] += 1;
+    }
+    return { open: open, done: done };
+  }
+
+  draw(t, flySim) {
+    const st = this.stateAt(t);
+    const totalDone = st.done.reduce((a, b) => a + b, 0);
+    const total = this.result.assignments.length;
+    let info = "t = " + t.toFixed(0) + " ms · Xong " + totalDone + "/" + total;
+    if (totalDone === total) info += " ✓";
+    this.infoEl.textContent = info;
+
+    this.drawGate();
+    const n = this.params.num_servers;
+    const queues = [];
+    for (let i = 0; i < n; i++) queues.push([]);
+    const flying = [];
+    for (const a of this.result.assignments) {
+      if (a.arrival > t) continue;
+      if (t - a.arrival < flySim) flying.push(a);
+      else if (t < a.finish) queues[a.server].push(this.requests[a.request_id]);
+    }
+    for (let i = 0; i < n; i++) {
+      this.drawServer(i, st.open[i], st.done[i], queues[i], this.params.overload_threshold, this.params.sticky_ip, false);
+    }
+    for (const a of flying) {
+      this.drawFlying(a.server, (t - a.arrival) / flySim, this.requests[a.request_id], this.params.sticky_ip);
+    }
+  }
+}
+
+// Trạng thái LB thật. Gọi update(msg) với mỗi tin WebSocket "state".
+class LivePanel extends PanelBase {
+  constructor(container, servers) {
+    super(container, "Load Balancer thật", cssVar("--primary"), servers.map((s) => s.slow_factor));
+    this.inflight = new Map(); // id -> {s, kind, client_ip, at}
+    this.state = null;
+    this.FLY_MS = 250;
+    const loop = () => {
+      this.draw();
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  }
+
+  update(msg) {
+    this.state = msg;
+    if (msg.algorithm_name) {
+      this.nameEl.textContent = msg.algorithm_name;
+      this.el.style.setProperty("--algo-color", cssVar("--algo-" + msg.algorithm));
+      this.color = cssVar("--algo-" + msg.algorithm);
+    }
+    const now = performance.now();
+    for (const e of msg.events || []) {
+      if (e.e === "a") this.inflight.set(e.id, { s: e.s, kind: e.k, client_ip: e.ip, at: now });
+      else this.inflight.delete(e.id);
+    }
+    // Phòng mất sự kiện "f" (VD: tab bị ẩn lâu): bỏ request treo quá 2 phút
+    for (const [id, r] of this.inflight) if (now - r.at > 120000) this.inflight.delete(id);
+  }
+
+  draw() {
+    if (!this.state) return;
+    const run = this.state.run;
+    const threshold = run ? run.overload_threshold : 5;
+    const stickyIp = run ? run.sticky_ip : null;
+    const now = performance.now();
+    const servers = this.state.servers;
+    this.infoEl.textContent = "Tổng " + this.state.total + " request · lỗi " + this.state.errors;
+
+    this.drawGate();
+    const queues = servers.map(() => []);
+    const flying = [];
+    for (const r of this.inflight.values()) {
+      if (now - r.at < this.FLY_MS) flying.push(r);
+      else queues[r.s].push(r);
+    }
+    servers.forEach((s, i) => {
+      this.drawServer(i, s.open, s.done, queues[i], threshold, stickyIp, s.up === false);
+    });
+    for (const r of flying) this.drawFlying(r.s, (now - r.at) / this.FLY_MS, r, stickyIp);
   }
 }
 
@@ -257,57 +309,59 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// Bộ điều khiển phát lại: 1 đồng hồ chung cho cả 4 khung
-const Simulation = {
-  panels: [],
-  t: 0,
-  endT: 0,
-  speed: 0.5,
-  playing: false,
-  lastTs: null,
-
-  init() {
-    document.getElementById("btn-play").addEventListener("click", () => this.play());
-    document.getElementById("btn-pause").addEventListener("click", () => this.pause());
-    document.getElementById("btn-reset").addEventListener("click", () => this.reset());
-    document.getElementById("btn-end").addEventListener("click", () => this.skipToEnd());
-    const speedEl = document.getElementById("speed");
+// Bộ điều khiển phát lại: 1 đồng hồ chung cho các khung trong root.
+// root chứa: .js-play .js-pause .js-reset .js-end .js-speed .js-timeline .js-timeline-label .js-grid
+class Player {
+  constructor(root) {
+    this.root = root;
+    this.panels = [];
+    this.t = 0;
+    this.endT = 0;
+    this.playing = false;
+    this.lastTs = null;
+    const q = (c) => root.querySelector(c);
+    q(".js-play").addEventListener("click", () => this.play());
+    q(".js-pause").addEventListener("click", () => this.pause());
+    q(".js-reset").addEventListener("click", () => this.reset());
+    q(".js-end").addEventListener("click", () => this.skipToEnd());
+    const speedEl = q(".js-speed");
     this.speed = Number(speedEl.value);
     speedEl.addEventListener("change", () => {
       this.speed = Number(speedEl.value);
       this.render();
     });
-    this.slider = document.getElementById("timeline");
+    this.slider = q(".js-timeline");
     this.slider.addEventListener("input", () => {
       this.t = (Number(this.slider.value) / 1000) * this.endT;
       this.render();
     });
-    this.label = document.getElementById("timeline-label");
-  },
+    this.label = q(".js-timeline-label");
+    this.grid = q(".js-grid");
+  }
 
-  load(data) {
+  // items: [{algo, data, title?}] — mỗi item 1 khung
+  load(items) {
     this.pause();
-    const grid = document.getElementById("sim-grid");
-    grid.innerHTML = "";
-    this.panels = data.algorithms.map((algo) => new SimPanel(grid, algo, data));
-    // Đồng hồ chạy tới khi thuật toán chậm nhất xong
-    this.endT = Math.max.apply(null, this.panels.map((p) => p.result.metrics.makespan));
+    this.grid.innerHTML = "";
+    this.panels = items.map((it) => new SimPanel(this.grid, it.algo, it.data, it.title));
+    // Đồng hồ chạy tới khi khung chậm nhất xong
+    this.endT = Math.max.apply(null, this.panels.map((p) => p.result.metrics ? p.result.metrics.makespan : 0));
     this.t = 0;
     this.render();
-  },
+  }
 
   // Thời gian bay của chấm tính theo thời gian mô phỏng sao cho mắt người
   // luôn thấy khoảng ~0.25s thật, nhưng không quá dài khi tua nhanh.
   flyDuration() {
     return Math.min(150, Math.max(20, 250 * this.speed));
-  },
+  }
 
   render() {
     const fly = this.flyDuration();
     this.panels.forEach((p) => p.draw(this.t, fly));
     this.slider.value = this.endT ? Math.round((this.t / this.endT) * 1000) : 0;
     this.label.textContent = this.t.toFixed(0) + " / " + this.endT.toFixed(0) + " ms";
-  },
+  }
 
   play() {
     if (!this.panels.length || this.playing) return;
@@ -315,7 +369,7 @@ const Simulation = {
     this.playing = true;
     this.lastTs = null;
     requestAnimationFrame((ts) => this.tick(ts));
-  },
+  }
 
   tick(ts) {
     if (!this.playing) return;
@@ -328,21 +382,58 @@ const Simulation = {
     }
     this.render();
     if (this.playing) requestAnimationFrame((t2) => this.tick(t2));
-  },
+  }
 
   pause() {
     this.playing = false;
-  },
+  }
 
   reset() {
     this.pause();
     this.t = 0;
     this.render();
-  },
+  }
 
   skipToEnd() {
     this.pause();
     this.t = this.endT;
     this.render();
-  },
-};
+  }
+}
+
+// HTML của bộ điều khiển phát lại (dùng ở trang Mô phỏng và Chạy thật)
+function playerHtml() {
+  return '' +
+    '<div class="player">' +
+    '  <button type="button" class="btn-primary js-play">Phát (Play)</button>' +
+    '  <button type="button" class="btn-ghost js-pause">Tạm dừng (Pause)</button>' +
+    '  <button type="button" class="btn-ghost js-reset">Chạy lại (Reset)</button>' +
+    '  <button type="button" class="btn-ghost js-end">Tới cuối (Skip to end)</button>' +
+    '  <label class="speed">Tốc độ (Speed)' +
+    '    <select class="js-speed">' +
+    '      <option value="0.1">0.1×</option><option value="0.25">0.25×</option>' +
+    '      <option value="0.5" selected>0.5×</option><option value="1">1× (real-time)</option>' +
+    '      <option value="2">2×</option><option value="5">5×</option><option value="10">10×</option>' +
+    "    </select>" +
+    "  </label>" +
+    "</div>" +
+    '<div class="timeline">' +
+    '  <input type="range" class="js-timeline" min="0" max="1000" value="0" step="1" aria-label="Thời gian">' +
+    '  <span class="mono js-timeline-label">0 / 0 ms</span>' +
+    "</div>" +
+    '<div class="sim-grid js-grid"></div>';
+}
+
+// Chú thích ký hiệu dùng chung
+function legendHtml() {
+  return '' +
+    '<ul class="legend">' +
+    '  <li><span class="dot dot-light"></span>Request nhẹ (Light)</li>' +
+    '  <li><span class="dot dot-heavy"></span>Request nặng (Heavy)</li>' +
+    '  <li><span class="dot dot-sticky"></span>Viền tím: sticky client</li>' +
+    '  <li><span class="box-sample">12</span>Số đã xử lý xong (Done)</li>' +
+    '  <li><span class="bar-sample"></span>Kết nối mở (Open conn.)</li>' +
+    '  <li><span class="box-sample box-over"></span>Quá tải (Overload)</li>' +
+    '  <li><span class="box-sample box-small">×2</span>Server yếu (Slow)</li>' +
+    "</ul>";
+}

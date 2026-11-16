@@ -1,24 +1,5 @@
-// Điểm khởi động: nạp tham số mặc định, gắn sự kiện, chạy mô phỏng lần đầu.
-
-// Định dạng số kiểu Việt Nam: 25,0
-function fmt(x, digits) {
-  const d = digits === undefined ? 1 : digits;
-  return Number(x).toLocaleString("vi-VN", { minimumFractionDigits: d, maximumFractionDigits: d });
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-
-function slowServers(params) {
-  const n = params.num_servers;
-  const k = Math.min(params.num_slow_servers, n - 1);
-  const list = [];
-  for (let i = n - k; i < n; i++) list.push(i);
-  return list;
-}
+// Bảng tổng hợp và nhận xét tự sinh cho kết quả mô phỏng 4 thuật toán
+// (dùng ở phần "Phân tích chi tiết" của trang Tổng quan).
 
 // ---------- Bảng tổng hợp ----------
 
@@ -140,44 +121,3 @@ function renderAnalysis(data) {
 
   document.getElementById("analysis-text").innerHTML = summary + html;
 }
-
-// ---------- Luồng chạy ----------
-
-async function runSimulation() {
-  const btn = document.getElementById("btn-run");
-  const status = document.getElementById("status");
-  const params = Settings.read();
-  btn.disabled = true;
-  status.className = "status";
-  status.textContent = "Đang chạy mô phỏng…";
-  try {
-    const [data, sticky] = await Promise.all([Api.simulate(params), Api.stickyCompare(params)]);
-    Simulation.load(data);
-    renderTable(data);
-    Charts.render(data, sticky);
-    renderAnalysis(data);
-    document.getElementById("btn-csv").href = Api.csvUrl(data.params);
-    status.textContent = "Xong: " + data.requests.length + " request, seed " + data.params.seed + ". Bấm Phát ở phần dưới.";
-  } catch (err) {
-    status.className = "status error";
-    status.textContent = "Lỗi: " + err.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-document.addEventListener("DOMContentLoaded", async () => {
-  Simulation.init();
-  Charts.init();
-  try {
-    const defaults = await Api.getDefaults();
-    Settings.init(defaults);
-    // Chỉ gắn nút Run sau khi form đã có giá trị mặc định
-    document.getElementById("btn-run").addEventListener("click", runSimulation);
-    await runSimulation();
-  } catch (err) {
-    const status = document.getElementById("status");
-    status.className = "status error";
-    status.textContent = "Không kết nối được backend: " + err.message;
-  }
-});

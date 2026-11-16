@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tổng quan · LB Admin</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">LB Admin</div>
+  <nav class="nav">
+    <a href="/dashboard.html">Tổng quan</a>
+    <a href="/simulation.html">Mô phỏng</a>
+    <a href="/runs.html">Chạy thật</a>
+  </nav>
+  <span id="ws-status" class="badge">Đang kết nối…</span>
+  <button type="button" id="btn-logout" class="btn-ghost">Đăng xuất</button>
+</header>
+
+<main>
+  <!-- 1. Điều khiển Load Balancer -->
+  <section class="card control-bar">
+    <div class="control-main">
+      <label class="inline">Thuật toán đang dùng
+        <select id="algo-select"></select>
+      </label>
+      <button type="button" id="btn-algo" class="btn-primary">Áp dụng</button>
+      <button type="button" id="btn-reset-counters" class="btn-ghost">Đặt lại bộ đếm</button>
+      <span id="lb-status" class="status" role="status"></span>
+    </div>
+    <div class="stats">
+      <div class="stat"><span class="k">Tổng request</span><span class="v" id="st-total">0</span></div>
+      <div class="stat"><span class="k">Lỗi</span><span class="v" id="st-errors">0</span></div>
+      <div class="stat"><span class="k">Kết nối đang mở</span><span class="v" id="st-open">0</span></div>
+      <div class="stat"><span class="k">Lượt đo (benchmark)</span><span class="v" id="st-run">Không có</span></div>
+    </div>
+    <div class="quick-run">
+      <span class="label">Sinh traffic (client):</span>
+      <label class="inline"><input type="number" id="qr-count" min="1" max="20000" step="100" value="300"> request</label>
+      <button type="button" id="btn-quick-run" class="btn-primary">Bắt đầu gửi</button>
+      <span class="hint-inline">Dùng thuật toán đang chọn và các tham số còn lại theo đề (~96 req/s, 20% nặng, 25% sticky, seed 42).
+        Tùy chỉnh đầy đủ ở trang <a href="/runs.html">Chạy thật</a>.</span>
+      <span id="qr-status" class="status" role="status"></span>
+    </div>
+    <p class="hint-inline mono" id="lb-url"></p>
+  </section>
+
+  <!-- 2. Đánh giá & đề xuất (mô phỏng trên traffic thật) -->
+  <section class="card advisor" id="advisor" data-level="idle">
+    <div class="advisor-head">
+      <div>
+        <div class="advisor-tag" id="adv-tag">Đánh giá &amp; đề xuất</div>
+        <h2 id="adv-title">Đang chờ traffic…</h2>
+        <p class="advisor-sub" id="adv-sub">Hệ thống mô phỏng 4 thuật toán trên chính các request thật vừa đi qua Load Balancer
+          (20 giây gần nhất, cập nhật mỗi 2 giây) và đề xuất thuật toán tốt hơn khi có tắc nghẽn.</p>
+        <p class="advisor-live" id="adv-live"></p>
+      </div>
+      <button type="button" id="btn-switch" class="btn-primary btn-lg" hidden>Chuyển</button>
+    </div>
+    <div class="table-wrap" id="adv-table-wrap" hidden>
+      <table id="adv-table"></table>
+    </div>
+    <p class="hint-inline" id="adv-foot"></p>
+  </section>
+
+  <!-- 3. Trực tiếp -->
+  <section class="card">
+    <h2>Lưu lượng trực tiếp</h2>
+    <p class="hint">Mỗi chấm là 1 request đang đi qua Load Balancer.</p>
+    <div id="live-box" class="live-box"></div>
+    <div id="legend"></div>
+  </section>
+
+  <!-- 4. Web Server -->
+  <section class="card">
+    <h2>Web Server</h2>
+    <div class="table-wrap"><table id="server-table"></table></div>
+  </section>
+
+  <!-- 5. Phân tích chi tiết -->
+  <section class="card" id="detail">
+    <div class="section-head">
+      <div>
+        <h2>Phân tích chi tiết</h2>
+        <p class="hint">Chụp traffic thật 20 giây gần nhất rồi mô phỏng song song 4 thuật toán trên đúng chuỗi request đó.</p>
+      </div>
+      <button type="button" id="btn-snapshot" class="btn-primary">Phân tích traffic hiện tại</button>
+    </div>
+    <p id="snap-status" class="status" role="status"></p>
+
+    <div id="snap-body" hidden>
+      <h3>Phát lại 4 thuật toán song song</h3>
+      <div id="snap-player"></div>
+
+      <h3 class="mt">Kết quả</h3>
+      <p class="hint">Ô xanh là giá trị tốt nhất của cột.</p>
+      <div class="table-wrap"><table id="result-table"></table></div>
+
+      <div class="chart-card">
+        <div class="chart-head">
+          <h3>% tải mỗi server (Workload)</h3>
+          <div class="tabs" id="tabs-workload">
+            <button type="button" class="tab active" data-mode="request">Theo số request</button>
+            <button type="button" class="tab" data-mode="busy">Theo thời gian xử lý</button>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="chart-workload"></canvas></div>
+      </div>
+
+      <div class="chart-card">
+        <h3>Makespan và thời gian chờ TB</h3>
+        <div class="chart-pair">
+          <div class="chart-box small"><canvas id="chart-makespan"></canvas></div>
+          <div class="chart-box small"><canvas id="chart-wait"></canvas></div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <div class="chart-head">
+          <h3>Ảnh hưởng của sticky client (IP gửi nhiều request nhất)</h3>
+          <div class="tabs" id="tabs-sticky">
+            <button type="button" class="tab active" data-metric="makespan">Makespan</button>
+            <button type="button" class="tab" data-metric="avg_wait">Chờ TB (Avg wait)</button>
+          </div>
+        </div>
+        <div class="chart-pair">
+          <div class="chart-box small"><canvas id="chart-sticky-compare"></canvas></div>
+          <div class="chart-box small"><canvas id="chart-sticky-dist"></canvas></div>
+        </div>
+      </div>
+
+      <div class="chart-card">
+        <h3>Nhận xét</h3>
+        <div id="analysis-text"></div>
+        <h3>Khuyến nghị theo bối cảnh</h3>
+        <div class="table-wrap">
+          <table class="reco">
+            <thead><tr><th>Bối cảnh hệ thống</th><th>Nên dùng</th></tr></thead>
+            <tbody>
+              <tr><td>Server đồng nhất, request đều nhau</td><td>Round Robin (đơn giản, đủ tốt)</td></tr>
+              <tr><td>Request dài ngắn khác nhau</td><td>Least Connections</td></tr>
+              <tr><td>Cần giữ session (Session stickiness)</td><td>IP Hash (chấp nhận lệch tải)</td></tr>
+              <tr><td>Server năng lực khác nhau</td><td>Least Response Time hoặc Least Connections</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="page-footer">Đồ án PBL4 · Hệ thống cân bằng tải</footer>
+
+<script src="/js/common.js"></script>
+<script src="/js/simulation.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/analysis.js"></script>
+<script src="/js/dashboard.js"></script>
+</body>
+</html>

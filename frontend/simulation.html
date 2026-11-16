@@ -3,15 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mô phỏng cân bằng tải</title>
-  <link rel="stylesheet" href="css/style.css">
+  <title>Mô phỏng · LB Admin</title>
+  <link rel="stylesheet" href="/css/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 </head>
 <body>
 
+<header class="topbar">
+  <div class="brand">LB Admin</div>
+  <nav class="nav">
+    <a href="/dashboard.html">Tổng quan</a>
+    <a href="/simulation.html">Mô phỏng</a>
+    <a href="/runs.html">Chạy thật</a>
+  </nav>
+  <button type="button" id="btn-logout" class="btn-ghost">Đăng xuất</button>
+</header>
+
 <header class="page-header">
-  <h1>Mô phỏng cân bằng tải (Load Balancing Simulation)</h1>
-  <p>So sánh Round Robin, Least Connections, IP Hash và Least Response Time trên cùng một bộ request.</p>
+  <h1>Mô phỏng 4 thuật toán</h1>
+  <p>Chạy Round Robin, Least Connections, IP Hash và Least Response Time trên cùng một bộ request sinh theo tham số
+    (mặc định theo đề: 300 request, seed 42), chọn thuật toán tối ưu nhất rồi đưa vào Load Balancer thật.</p>
 </header>
 
 <main>
@@ -32,7 +43,7 @@
       <fieldset>
         <legend>Request</legend>
         <label>Số request (Requests)
-          <input type="number" name="num_requests" min="1" max="5000" step="1">
+          <input type="number" name="num_requests" min="1" max="20000" step="1">
         </label>
         <label>% request nặng (Heavy %)
           <input type="number" name="heavy_percent" min="0" max="100" step="1">
@@ -99,44 +110,22 @@
     <h2>Mô phỏng trực tiếp (Live Simulation)</h2>
     <p class="hint">Bấm Phát để xem 4 thuật toán chạy song song.</p>
 
-    <div class="player">
-      <button type="button" id="btn-play" class="btn-primary">Phát (Play)</button>
-      <button type="button" id="btn-pause" class="btn-ghost">Tạm dừng (Pause)</button>
-      <button type="button" id="btn-reset" class="btn-ghost">Chạy lại (Reset)</button>
-      <button type="button" id="btn-end" class="btn-ghost">Tới cuối (Skip to end)</button>
-      <label class="speed">Tốc độ (Speed)
-        <select id="speed">
-          <option value="0.1">0.1×</option>
-          <option value="0.25">0.25×</option>
-          <option value="0.5" selected>0.5×</option>
-          <option value="1">1× (real-time)</option>
-          <option value="2">2×</option>
-          <option value="5">5×</option>
-          <option value="10">10×</option>
-        </select>
-      </label>
-    </div>
-    <div class="timeline">
-      <input type="range" id="timeline" min="0" max="1000" value="0" step="1" aria-label="Thời gian mô phỏng">
-      <span id="timeline-label" class="mono">0 / 0 ms</span>
-    </div>
-
-    <div class="sim-grid" id="sim-grid">
-      <!-- 4 khung được tạo bằng simulation.js -->
-    </div>
-
-    <ul class="legend">
-      <li><span class="dot dot-light"></span>Request nhẹ (Light)</li>
-      <li><span class="dot dot-heavy"></span>Request nặng (Heavy)</li>
-      <li><span class="dot dot-sticky"></span>Viền tím: sticky client</li>
-      <li><span class="box-sample">12</span>Số đã xử lý xong (Done)</li>
-      <li><span class="bar-sample"></span>Kết nối mở (Open conn.)</li>
-      <li><span class="box-sample box-over"></span>Quá tải (Overload)</li>
-      <li><span class="box-sample box-small">×2</span>Server yếu (Slow)</li>
-    </ul>
+    <div id="live-player"></div>
   </section>
 
-  <!-- 3. Kết quả -->
+  <!-- 3. Thuật toán tối ưu -->
+  <section class="card" id="ranking">
+    <h2>Thuật toán tối ưu: <span id="best-name">…</span></h2>
+    <p class="hint">Xếp hạng theo thời gian chờ TB thấp nhất (bằng nhau thì xét makespan, rồi số lần quá tải).</p>
+    <div class="table-wrap"><table id="rank-table"></table></div>
+    <div class="actions">
+      <button type="button" id="btn-apply-only" class="btn-primary" disabled>Áp dụng cho LB</button>
+      <button type="button" id="btn-apply" class="btn-ghost" disabled>Áp dụng cho LB &amp; chạy đo</button>
+      <span id="apply-note" class="status"></span>
+    </div>
+  </section>
+
+  <!-- 4. Kết quả -->
   <section class="card" id="results">
     <div class="section-head">
       <h2>Kết quả (Results)</h2>
@@ -182,7 +171,7 @@
     </div>
   </section>
 
-  <!-- 4. Nhận xét -->
+  <!-- 5. Nhận xét -->
   <section class="card" id="analysis">
     <h2>Nhận xét (Analysis)</h2>
     <p class="hint">Nhận xét tự sinh từ số liệu của lần chạy hiện tại.</p>
@@ -207,13 +196,14 @@
 </main>
 
 <footer class="page-footer">
-  Đồ án PBL4 · Nhóm thực hiện: ……………… · Mô phỏng thay cho Web Server thật
+  Đồ án PBL4 · Hệ thống cân bằng tải
 </footer>
 
-<script src="js/api.js"></script>
-<script src="js/settings.js"></script>
-<script src="js/simulation.js"></script>
-<script src="js/charts.js"></script>
-<script src="js/main.js"></script>
+<script src="/js/common.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/simulation.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/analysis.js"></script>
+<script src="/js/sim-page.js"></script>
 </body>
 </html>

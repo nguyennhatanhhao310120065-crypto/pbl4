@@ -230,13 +230,51 @@ quy tắc hòa điểm luôn chọn index nhỏ nhất. Điều này **không �
 | Cần giữ session | IP Hash (hoặc sticky session bằng cookie) | Cùng client luôn về cùng server; chấp nhận lệch tải |
 | Server năng lực khác nhau | Least Connections hoặc Least Response Time | Cả hai tự né server yếu; LRT cần cửa sổ đo phù hợp |
 
-## 8. Hạn chế và hướng phát triển
+## 8. Hệ thống thật và đối chiếu với mô phỏng
+
+Ngoài engine mô phỏng, đồ án xây dựng hệ thống chạy thật trên 127.0.0.1:
+
+| Thành phần | Chương trình | Vai trò |
+|---|---|---|
+| 4 Web Server | `backend/web_server.py` (cổng 80–83, s3 ×2) | Nhận kết nối bất đồng bộ (asyncio), xử lý bằng 1 worker + hàng đợi FIFO |
+| Load Balancer | `backend/load_balancer.py` (cổng 8080) | Reverse proxy HTTP, chọn server bằng đúng 4 class thuật toán của bản mô phỏng |
+| Client | `backend/client.py` | Sinh bộ request bằng cùng generator/seed, gửi theo đúng thời điểm đến (~96 req/s) |
+| Trang admin | `backend/admin.py` (cổng 5050) | Đăng nhập, mô phỏng 4 thuật toán, chọn thuật toán tối ưu, chạy thật, lịch sử, đối chiếu |
+
+**Vì sao server dùng 1 worker + hàng đợi mà không xử lý song song không giới hạn?** Bất đồng bộ (kiểu nginx) giúp
+giữ hàng nghìn kết nối chờ mà không tốn thread, nhưng không làm tăng năng lực xử lý. Nếu server "xử lý" không giới
+hạn thì không request nào phải chờ, server yếu không bao giờ nghẽn và 4 thuật toán cho kết quả gần như nhau. Mô hình
+1 worker giống hệt engine mô phỏng nên số liệu thật so sánh trực tiếp được với số liệu mô phỏng.
+
+**Quy trình đề xuất:** LB ghi lại các request thật trong 20 giây gần nhất → mỗi 2 giây mô phỏng 4 thuật toán trên
+đúng chuỗi request đó → xếp hạng theo thời gian chờ TB (bằng nhau thì xét makespan, rồi số lần quá tải) → nếu thuật
+toán tốt nhất giảm chờ TB ≥ 30% và ≥ 5 ms so với thuật toán đang dùng thì đề xuất chuyển, admin bấm 1 nút để áp dụng.
+
+Ví dụ lượt #8 (5000 request, seed 42): bắt đầu bằng Round Robin, hàng đợi s3 tăng lên ~180 kết nối và hệ thống đề
+xuất Least Connections; sau khi chuyển ở giây 24,6, hàng đợi s3 giảm về dưới 15 trong khoảng 10 giây. Mô phỏng
+cùng lịch đổi thuật toán cho makespan 52.345 ms, chờ TB 771,2 ms; đo thật 52.312 ms, 777,9 ms.
+
+**Kết quả đo thật (seed 42, 300 request), dạng thật / mô phỏng:**
+
+| Thuật toán | Makespan (ms) | Chờ TB (ms) | % request s3 | Quá tải (lần) |
+|---|---|---|---|---|
+| Round Robin | 4991 / 4988 | 299,8 / 298,2 | 25,0% / 25,0% | 18 / 18 |
+| Least Connections | 3397 / 3398 | 22,5 / 20,4 | 12,0% / 13,0% | 0 / 0 |
+| IP Hash | 8761 / 8743 | 1051,6 / 1048,1 | 41,3% / 41,3% | 7 / 8 |
+| Least Response Time | 3422 / 3858 | 59,3 / 57,3 | 13,7% / 13,7% | 23 / 15 |
+
+Số liệu thật khớp với mô phỏng. Chênh lệch nhỏ đến từ: (1) thời gian chờ thật gồm cả độ trễ mạng/proxy (~1–2 ms mỗi
+request); (2) LC và LRT ra quyết định theo trạng thái tức thời, nên lệch thời gian cỡ mili-giây cũng có thể đổi
+lựa chọn khi hai server hòa nhau, làm phân bố giữa s0–s2 và số lần quá tải của LRT dao động. Thứ hạng của
+4 thuật toán giữ nguyên: Least Connections tốt nhất, IP Hash kém nhất.
+
+## 9. Hạn chế và hướng phát triển
 
 **Hạn chế**
 
 - Mỗi server chỉ có 1 worker FIFO; server thật thường xử lý song song nhiều request.
-- Không mô phỏng độ trễ mạng, timeout, retry, server hỏng.
-- Load balancer có thông tin trạng thái **tức thời, chính xác** (thực tế phải qua health check).
+- Engine mô phỏng không tính độ trễ mạng, timeout, retry, server hỏng (bản chạy thật có độ trễ mạng thật).
+- LB thật chỉ hiển thị server mất kết nối qua health check, chưa tự loại server hỏng khỏi danh sách chọn.
 - Chỉ 300 request → kết quả dao động theo seed (mục 4.5).
 - Thời gian xử lý phân phối đều, chưa có phân phối đuôi dài (heavy-tailed).
 
@@ -245,9 +283,9 @@ quy tắc hòa điểm luôn chọn index nhỏ nhất. Điều này **không �
 - Server nhiều worker (M/M/c), thêm Weighted Round Robin / Weighted Least Connections.
 - Power of Two Choices, Consistent Hashing cho IP Hash.
 - Chạy nhiều seed và vẽ khoảng tin cậy.
-- Thử nghiệm trên server thật (NGINX/HAProxy) để đối chiếu với mô phỏng.
+- Đối chiếu thêm với NGINX/HAProxy chạy cùng cụm server.
 
-## 9. Tài liệu tham khảo
+## 10. Tài liệu tham khảo
 
 1. NGINX Documentation — *HTTP Load Balancing*: https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/
 2. HAProxy Documentation — *Configuration Manual, `balance` keyword*: https://docs.haproxy.org/

@@ -23,7 +23,7 @@ DEFAULT_PARAMS = {
 
 # Giới hạn hợp lệ cho từng tham số số: (min, max, kiểu)
 PARAM_LIMITS = {
-    "num_requests": (1, 5000, int),
+    "num_requests": (1, 20000, int),
     "num_servers": (2, 6, int),
     "heavy_percent": (0, 100, float),
     "light_min": (0.1, 10000, float),
@@ -45,3 +45,49 @@ def slow_factors(params):
     n = params["num_servers"]
     k = min(params["num_slow_servers"], n - 1)  # luôn giữ ít nhất 1 server bình thường
     return [params["slow_factor"] if i >= n - k else 1 for i in range(n)]
+
+
+# ===================== Hệ thống thật =====================
+import os  # noqa: E402
+
+# 4 Web Server thật. s3 là server yếu: mọi request xử lý lâu gấp đôi.
+# Đổi BASE_PORT bằng biến môi trường nếu không mở được cổng 80 (VD: Linux không có sudo).
+BASE_PORT = int(os.environ.get("LB_BASE_PORT", 80))
+CLUSTER = [
+    {"name": "s0", "port": BASE_PORT + 0, "slow_factor": 1},
+    {"name": "s1", "port": BASE_PORT + 1, "slow_factor": 1},
+    {"name": "s2", "port": BASE_PORT + 2, "slow_factor": 1},
+    {"name": "s3", "port": BASE_PORT + 3, "slow_factor": 2},
+]
+SERVER_HOST = "127.0.0.1"
+
+# LB_HOST=0.0.0.0 để máy khác cùng mạng Wi-Fi gửi request tới LB (VD: http://192.168.1.23:8080).
+# Trang admin luôn chỉ mở ở 127.0.0.1 để không lộ ra mạng.
+LB_HOST = os.environ.get("LB_HOST", "127.0.0.1")
+LB_PORT = int(os.environ.get("LB_PORT", 8080))        # cổng nhận traffic của client
+LB_URL = "http://127.0.0.1:%d" % LB_PORT              # địa chỉ client trên chính máy này dùng để gọi LB
+ADMIN_HOST = "127.0.0.1"
+ADMIN_PORT = int(os.environ.get("ADMIN_PORT", 5050))  # trang admin (5000 hay bị AirPlay chiếm trên macOS)
+
+ADMIN_USERNAME = os.environ.get("LB_ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.environ.get("LB_ADMIN_PASSWORD", "admin123")
+SESSION_HOURS = 8
+
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "lb.db")
+
+HEALTH_INTERVAL = 1.0   # giây, LB kiểm tra sức khỏe server
+PUSH_INTERVAL = 0.1     # giây, LB đẩy trạng thái lên trang admin qua WebSocket
+
+
+def cluster_params():
+    """Tham số server của cụm thật, dạng giống DEFAULT_PARAMS để chạy mô phỏng đối chiếu.
+
+    slow_factors() lấy server yếu từ cuối lên, nên cụm thật cũng phải đặt server yếu ở cuối.
+    """
+    factors = [s["slow_factor"] for s in CLUSTER]
+    slow = [f for f in factors if f != 1]
+    return {
+        "num_servers": len(CLUSTER),
+        "num_slow_servers": len(slow),
+        "slow_factor": slow[0] if slow else DEFAULT_PARAMS["slow_factor"],
+    }

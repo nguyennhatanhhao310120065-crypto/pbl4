@@ -73,3 +73,22 @@ def make_algorithm(key):
         if cls.key == key:
             return cls()
     raise ValueError("Không có thuật toán: %s" % key)
+
+
+class Scheduled:
+    """Đổi thuật toán theo lịch [(t_ms, key), ...] (lịch bắt đầu từ t = 0).
+
+    Dùng để mô phỏng lại đúng 1 lượt chạy thật mà admin đã đổi thuật toán giữa chừng.
+    Mỗi lần đổi tạo thuật toán mới (trạng thái sạch), giống Load Balancer thật.
+    """
+
+    def __init__(self, schedule):
+        self.schedule = sorted(schedule)
+        self.idx = 0
+        self.algo = make_algorithm(self.schedule[0][1])
+
+    def choose(self, request, servers, now):
+        while self.idx + 1 < len(self.schedule) and self.schedule[self.idx + 1][0] <= now:
+            self.idx += 1
+            self.algo = make_algorithm(self.schedule[self.idx][1])
+        return self.algo.choose(request, servers, now)

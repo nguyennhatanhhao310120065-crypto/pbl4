@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chạy thật · LB Admin</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">LB Admin</div>
+  <nav class="nav">
+    <a href="/dashboard.html">Tổng quan</a>
+    <a href="/simulation.html">Mô phỏng</a>
+    <a href="/runs.html">Chạy thật</a>
+  </nav>
+  <button type="button" id="btn-logout" class="btn-ghost">Đăng xuất</button>
+</header>
+
+<header class="page-header">
+  <h1>Chạy thật</h1>
+  <p>Client gửi bộ request (sinh theo seed) tới Load Balancer thật. Trong lúc chạy có thể đổi thuật toán ở trang Tổng quan;
+    kết quả đo thật được đối chiếu với mô phỏng của cùng bộ request và cùng lịch đổi thuật toán.</p>
+</header>
+
+<main>
+  <!-- 1. Thiết lập lượt chạy -->
+  <section class="card" id="settings">
+    <h2>Lượt chạy mới</h2>
+    <p class="hint" id="cluster-note"></p>
+
+    <div class="lb-row">
+      <label class="inline">Thuật toán (Algorithm)
+        <select id="algo-select"></select>
+      </label>
+    </div>
+
+    <form id="param-form" autocomplete="off">
+      <fieldset>
+        <legend>Request</legend>
+        <label>Số request (Requests)
+          <input type="number" name="num_requests" min="1" max="20000" step="1">
+        </label>
+        <label>% request nặng (Heavy %)
+          <input type="number" name="heavy_percent" min="0" max="100" step="1">
+        </label>
+        <label>Nhẹ min / max (ms)
+          <span class="pair">
+            <input type="number" name="light_min" min="0.1" step="0.1">
+            <input type="number" name="light_max" min="0.1" step="0.1">
+          </span>
+        </label>
+        <label>Nặng min / max (ms)
+          <span class="pair">
+            <input type="number" name="heavy_min" min="0.1" step="0.1">
+            <input type="number" name="heavy_max" min="0.1" step="0.1">
+          </span>
+        </label>
+        <label>Tốc độ đến (req/s)
+          <input type="number" name="arrival_rate" min="1" step="1">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Client</legend>
+        <label>% sticky client
+          <input type="number" name="sticky_percent" min="0" max="100" step="1">
+        </label>
+        <label>IP sticky client
+          <input type="text" name="sticky_ip">
+        </label>
+        <label>Số client khác (Clients)
+          <input type="number" name="num_clients" min="1" max="250" step="1">
+        </label>
+        <label>Seed
+          <input type="number" name="seed" min="0" step="1">
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Đánh giá</legend>
+        <label>Ngưỡng quá tải (Overload)
+          <input type="number" name="overload_threshold" min="1" step="1" title="Server bị coi là quá tải khi số kết nối mở lớn hơn hoặc bằng ngưỡng này.">
+        </label>
+      </fieldset>
+    </form>
+
+    <div class="actions">
+      <button type="button" id="btn-start" class="btn-primary">Bắt đầu chạy thật</button>
+      <button type="button" id="btn-defaults" class="btn-ghost">Khôi phục mặc định</button>
+      <span id="status" class="status" role="status"></span>
+    </div>
+    <div class="progress" id="progress" hidden><div class="progress-bar" id="progress-bar"></div></div>
+  </section>
+
+  <!-- 2. Trực tiếp -->
+  <section class="card">
+    <h2>Trực tiếp (Live)</h2>
+    <div id="live-box" class="live-box"></div>
+    <div id="legend"></div>
+  </section>
+
+  <!-- 3. Lịch sử -->
+  <section class="card">
+    <h2>Lịch sử lượt chạy</h2>
+    <div class="table-wrap"><table id="runs-table"></table></div>
+  </section>
+
+  <!-- 4. Chi tiết -->
+  <section class="card" id="detail" hidden>
+    <div class="section-head">
+      <h2 id="detail-title">Chi tiết</h2>
+      <a id="detail-csv" class="btn-ghost" href="#" download>Tải log CSV (Export CSV)</a>
+    </div>
+    <p class="hint" id="detail-note"></p>
+
+    <div class="table-wrap"><table id="compare-table"></table></div>
+
+    <div class="chart-card">
+      <h3>% request mỗi server: chạy thật và mô phỏng</h3>
+      <div class="chart-box small"><canvas id="chart-compare"></canvas></div>
+    </div>
+
+    <div class="chart-card">
+      <h3>Phát lại: chạy thật và mô phỏng song song</h3>
+      <div id="replay"></div>
+    </div>
+  </section>
+</main>
+
+<footer class="page-footer">Đồ án PBL4 · Hệ thống cân bằng tải</footer>
+
+<script src="/js/common.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/simulation.js"></script>
+<script src="/js/runs.js"></script>
+</body>
+</html>
