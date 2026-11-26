@@ -3,6 +3,9 @@
 Chạy:  python -m backend.web_server --name s0 --port 80
        python -m backend.web_server --name s3 --port 83 --slow-factor 2
 
+Web Server ở máy riêng (Load Balancer ở máy khác gọi tới): thêm --host 0.0.0.0, mỗi server 1 terminal:
+       python -m backend.web_server --host 0.0.0.0 --name s0 --port 8001
+
 Mô hình xử lý (khớp với engine mô phỏng):
   - Nhận kết nối bất đồng bộ (asyncio, giống nginx): request đang chờ chỉ là
     1 coroutine treo, không chiếm thread.
@@ -25,7 +28,7 @@ import time
 
 from aiohttp import web
 
-from backend.config import SERVER_HOST
+from backend.config import SERVER_HOST, lan_ip
 
 
 # asyncio.sleep trên macOS/Windows thường ngủ lố ~1 ms (đáng kể với request nhẹ 6–16 ms).
@@ -69,8 +72,12 @@ class Worker:
         rid = request.headers.get("X-Request-Id")
         num = "#%d" % (int(rid) + 1) if rid and rid.isdigit() else "#-"
         ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote or "?"
-        print("[%s] nhận %-5s %s %-6s từ %-14s %s" % (self.name, num, request.method, request.path, ip, text),
-              flush=True)
+        client = request.headers.get("X-Client-Name")
+        if client:
+            num += " của " + client
+        # request.remote = máy gửi trực tiếp tới server này (chính là Load Balancer)
+        print("[%s] nhận %-5s %s %-6s client %-15s qua LB %-15s %s" % (
+            self.name, num, request.method, request.path, ip, request.remote, text), flush=True)
 
     async def handle_work(self, request):
         recv = time.perf_counter()
@@ -158,6 +165,8 @@ async def serve(name, port, slow_factor, host=SERVER_HOST):
         host = "0.0.0.0"
         await web.TCPSite(runner, host, port).start()
     print("[%s] Web Server chạy tại %s:%d, hệ số chậm ×%g" % (name, host, port, slow_factor), flush=True)
+    if host == "0.0.0.0":
+        print("[%s] Load Balancer gọi tới: %s:%d" % (name, lan_ip(), port), flush=True)
     try:
         await asyncio.Event().wait()
     finally:
@@ -169,9 +178,11 @@ def main():
     ap.add_argument("--name", required=True)
     ap.add_argument("--port", type=int, required=True)
     ap.add_argument("--slow-factor", type=float, default=1.0)
+    ap.add_argument("--host", default=SERVER_HOST,
+                    help="0.0.0.0 để Load Balancer ở máy khác gọi tới (mặc định %s)" % SERVER_HOST)
     args = ap.parse_args()
     try:
-        asyncio.run(serve(args.name, args.port, args.slow_factor))
+        asyncio.run(serve(args.name, args.port, args.slow_factor, args.host))
     except KeyboardInterrupt:
         pass
 

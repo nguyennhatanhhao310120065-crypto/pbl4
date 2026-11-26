@@ -71,6 +71,40 @@ Terminal in ra địa chỉ dạng `http://192.168.x.x:8080` để gửi cho má
 Lần đầu macOS có thể hỏi cho phép kết nối đến: chọn **Cho phép**. Trang admin (5050) vẫn chỉ mở ở `127.0.0.1`.
 Không mở LB ra Internet: LB tin header `X-Forwarded-For` nên ai cũng có thể giả IP.
 
+### Chạy trên 3 máy (mỗi chương trình 1 terminal)
+
+Cùng 1 mạng Wi-Fi. Lấy IP từng máy: macOS `ipconfig getifaddr en0`, Windows `ipconfig`. Ví dụ dưới đây dùng
+máy server là `192.168.1.20` và máy Load Balancer là `192.168.1.10`.
+
+**Máy server**: mở 4 terminal, mỗi terminal chạy 1 Web Server:
+```bash
+python -m backend.web_server --host 0.0.0.0 --name s0 --port 8001
+python -m backend.web_server --host 0.0.0.0 --name s1 --port 8002
+python -m backend.web_server --host 0.0.0.0 --name s2 --port 8003
+python -m backend.web_server --host 0.0.0.0 --name s3 --port 8004 --slow-factor 2
+```
+
+**Máy Load Balancer**: mở 1 terminal:
+```bash
+python -m backend.main --host 0.0.0.0 --servers 192.168.1.20:8001 192.168.1.20:8002 192.168.1.20:8003 192.168.1.20:8004
+```
+Trang admin vẫn mở tại http://127.0.0.1:5050 trên máy này. Load Balancer tự đọc hệ số chậm của từng server qua `GET /health`.
+
+**Máy client**: mỗi terminal là 1 client. Request mang IP thật của máy client, không giả lập:
+```bash
+python -m backend.client --lb http://192.168.1.10:8080 --name c1 --num-requests 100 --seed 1
+python -m backend.client --lb http://192.168.1.10:8080 --name c2 --num-requests 100 --seed 2
+python -m backend.client --lb http://192.168.1.10:8080 --name c3 --num-requests 100 --seed 3
+```
+
+Mỗi terminal in từng request:
+- Client: `#1 ... 192.168.1.30 nặng → s0 HTTP 200 phản hồi 73.7 ms`
+- Load Balancer: `[LB] #1 192.168.1.30 c1 → s0 (192.168.1.20:8001) Round Robin HTTP 200`
+- Web Server: `[s0] nhận #1 của c1 GET /work client 192.168.1.30 qua LB 192.168.1.10 ...`
+
+Lần đầu chạy, macOS hoặc Windows có thể hỏi có cho phép kết nối đến hay không: chọn **Cho phép**.
+Nút **Bắt đầu gửi** trên trang admin vẫn chạy client giả lập 50 IP (`--fake-ips`) theo đề bài.
+
 ### Chạy từng chương trình riêng
 
 ```bash

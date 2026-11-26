@@ -66,7 +66,8 @@ class ServerState:
         self.name = cfg["name"]
         self.port = cfg["port"]
         self.slow_factor = cfg["slow_factor"]
-        self.base_url = "http://%s:%d" % (SERVER_HOST, cfg["port"])
+        self.host = cfg.get("host", SERVER_HOST)
+        self.base_url = "http://%s:%d" % (self.host, cfg["port"])
         self.open_connections = 0              # request đã chuyển tới, chưa có phản hồi
         self.recent_rt = deque(maxlen=RECENT_WINDOW)
         self.done = 0
@@ -84,6 +85,7 @@ class ServerState:
         return {
             "name": self.name,
             "port": self.port,
+            "host": self.host,
             "slow_factor": self.slow_factor,
             "up": self.up,
             "enabled": self.enabled,
@@ -131,8 +133,10 @@ class Run:
 
 
 class LoadBalancer:
-    def __init__(self, algorithm="rr"):
-        self.servers = [ServerState(i, cfg) for i, cfg in enumerate(CLUSTER)]
+    def __init__(self, algorithm="rr", cluster=None, verbose=False):
+        self.servers = [ServerState(i, cfg) for i, cfg in enumerate(cluster or CLUSTER)]
+        self.remote = cluster is not None    # Web Server chạy ở máy khác: LB không tự khởi động server
+        self.verbose = verbose               # in 1 dòng cho mỗi request LB chuyển tiếp
         self.algo_key = algorithm
         self.algorithm = make_algorithm(algorithm)
         self.run = None
@@ -255,6 +259,9 @@ class LoadBalancer:
         """Thêm server cuối cùng (hệ số ×1). Cổng đã có Web Server chạy sẵn thì dùng lại, không thì tự khởi động."""
         if self.busy():
             raise ClusterError("Đang gửi request, đợi gửi xong rồi thêm server")
+        if self.remote:
+            raise ClusterError("Web Server chạy trên máy khác: mở thêm 1 terminal web_server ở máy đó "
+                               "rồi chạy lại Load Balancer với thêm địa chỉ trong --servers")
         if len(self.servers) >= MAX_SERVERS:
             raise ClusterError("Tối đa %d server" % MAX_SERVERS)
         index = len(self.servers)
@@ -419,6 +426,11 @@ class LoadBalancer:
         if run:
             self.record_finish(run, req_id, idx, end, service, server.open_connections)
 
+        if self.verbose:
+            client = request.headers.get("X-Client-Name")
+            print("[LB] #%-5d %-15s%s → %s (%s:%d)  %s  HTTP %s  %6.1f ms" % (
+                gid, client_ip, (" " + client) if client else "", server.name, server.host, server.port,
+                ALGO_NAMES[algo_key], status, response_ms), flush=True)
         resp_headers["X-Upstream-Server"] = server.name
         return web.Response(status=status, body=resp_body, headers=resp_headers)
 
@@ -602,8 +614,16 @@ class LoadBalancer:
                 try:
                     async with self.session.get(s.base_url + "/health", timeout=timeout) as r:
                         s.up = r.status == 200
+                        info = await r.json() if s.up else {}
+                    # Hệ số chậm do chính Web Server quyết định (--slow-factor), LB chỉ đọc lại
+                    factor = info.get("slow_factor")
+                    if isinstance(factor, (int, float)) and factor != s.slow_factor:
+                        s.slow_factor = factor
+                        self.shadows.set_factor(s.index, factor)
                 except (aiohttp.ClientError, asyncio.TimeoutError):
                     s.up = False
+                except ValueError:
+                    pass
             await asyncio.gather(*(check(s) for s in self.servers))
             await asyncio.sleep(HEALTH_INTERVAL)
 

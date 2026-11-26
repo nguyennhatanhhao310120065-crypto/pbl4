@@ -65,6 +65,32 @@ CLUSTER = [
     {"name": "s3", "port": BASE_PORT + 3, "slow_factor": 2},
 ]
 SERVER_HOST = "127.0.0.1"
+
+
+def parse_servers(items):
+    """Danh sách Web Server LB sẽ chia tải, dạng "host:port" (VD: 192.168.1.20:8001).
+
+    Dùng khi 4 Web Server chạy trên máy khác: python -m backend.main --servers 192.168.1.20:8001 ...
+    Hệ số chậm không khai ở đây: LB hỏi chính Web Server qua GET /health.
+    """
+    cluster = []
+    for i, item in enumerate(items):
+        host, _, port = item.strip().rpartition(":")
+        if not host or not port.isdigit():
+            raise ValueError("Sai địa chỉ server '%s', cần dạng host:port" % item)
+        cluster.append({"name": "s%d" % i, "host": host, "port": int(port), "slow_factor": 1})
+    return cluster
+
+
+def lan_ip():
+    """IP của máy này trong mạng LAN (không gửi gói tin nào, chỉ hỏi hệ điều hành route ra ngoài)."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("10.255.255.255", 1))
+            return s.getsockname()[0]
+        except OSError:
+            return "127.0.0.1"
 MIN_SERVERS = 2
 MAX_SERVERS = 6
 SLOW_FACTOR_CHOICES = [1, 1.5, 2, 3, 4, 5]   # hệ số chậm admin chọn được cho từng server

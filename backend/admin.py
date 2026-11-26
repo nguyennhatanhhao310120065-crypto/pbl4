@@ -11,7 +11,6 @@ import json
 import os
 import re
 import secrets
-import socket
 import sys
 import time
 
@@ -19,8 +18,8 @@ from aiohttp import WSMsgType, web
 
 from backend import db
 from backend.algorithms import ALGORITHMS, ip_to_server
-from backend.config import (ADMIN_PASSWORD, ADMIN_USERNAME, DEFAULT_PARAMS, LB_HOST, LB_PORT, LB_URL,
-                            PARAM_LIMITS, SESSION_HOURS)
+from backend.config import (ADMIN_PASSWORD, ADMIN_USERNAME, DEFAULT_PARAMS, LB_URL, PARAM_LIMITS,
+                            SESSION_HOURS)
 from backend.generator import generate_requests
 from backend.simulator import run_all
 from backend.load_balancer import ALGO_NAMES, ClusterError, simulate_run
@@ -169,22 +168,12 @@ async def index(request):
 
 # ---------- Cấu hình ----------
 
-def lan_ip():
-    """IP của máy trong mạng LAN (không gửi gói tin nào, chỉ hỏi hệ điều hành route ra ngoài)."""
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-        try:
-            s.connect(("10.255.255.255", 1))
-            return s.getsockname()[0]
-        except OSError:
-            return "127.0.0.1"
-
-
 def cluster_info(lb):
     return {
         "servers": [s.snapshot() for s in lb.servers],
         "params": lb.cluster_params(),
         "lb_url": LB_URL,
-        "lan_url": ("http://%s:%d" % (lan_ip(), LB_PORT)) if LB_HOST == "0.0.0.0" else None,
+        "lan_url": getattr(lb, "lan_url", None),
     }
 
 
@@ -393,6 +382,7 @@ async def api_runs_start(request):
         "--lb", LB_URL,
         "--run-id", str(run_id),
         "--params-json", json.dumps(params),
+        "--fake-ips",  # 1 tiến trình giả lập 50 client theo đề bài (IP trong header X-Forwarded-For)
         "--quiet",   # từng request do chính các Web Server in ra terminal ([s0] nhận #1 ...)
         cwd=ROOT, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
