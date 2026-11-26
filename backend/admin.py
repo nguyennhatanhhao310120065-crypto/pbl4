@@ -393,6 +393,7 @@ async def api_runs_start(request):
         "--lb", LB_URL,
         "--run-id", str(run_id),
         "--params-json", json.dumps(params),
+        "--quiet",   # từng request do chính các Web Server in ra terminal ([s0] nhận #1 ...)
         cwd=ROOT, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
     )
     asyncio.get_running_loop().create_task(lb.watch_client(run, process))

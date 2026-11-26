@@ -54,7 +54,7 @@ class ShadowCluster:
                 s.done += 1
                 s.recent_rt.append(finish - arrival)
                 if visible:
-                    emit({"e": "f", "id": rid, "s": s.index, "ok": True, "g": self.key})
+                    emit({"e": "f", "id": rid, "s": s.index, "ok": True, "g": self.key, "t": round(finish, 1)})
 
     def assign(self, now, rid, base, client_ip):
         """Chọn server (trong các server đang bật) rồi xếp vào hàng đợi. Trả về index server, None nếu tắt hết."""
@@ -102,7 +102,7 @@ class Shadows:
         for c in self.clusters.values():
             c.advance(now, emit)
 
-    def on_request(self, now, rid, base, client_ip, kind, current, emit):
+    def on_request(self, now, rid, base, client_ip, kind, current, emit, num=None):
         """Đưa 1 request thật vào cả 4 cụm ảo.
 
         Sơ đồ của thuật toán đang chạy vẽ bằng số liệu thật, nên chỉ phát sự kiện cho 3 cụm còn lại.
@@ -118,7 +118,8 @@ class Shadows:
             idx = c.assign(now, rid, base, client_ip)
             if idx is not None and key != current:
                 c.servers[idx].jobs[-1][3] = True
-                emit({"e": "a", "id": rid, "s": idx, "k": kind, "ip": client_ip, "g": key})
+                emit({"e": "a", "id": rid, "n": rid if num is None else num, "s": idx, "k": kind,
+                      "ip": client_ip, "g": key, "t": round(now, 1)})
 
     def reset(self):
         for c in self.clusters.values():

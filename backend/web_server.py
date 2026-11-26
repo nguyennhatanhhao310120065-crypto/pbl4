@@ -64,6 +64,14 @@ class Worker:
             if not fut.cancelled():
                 fut.set_result((start, end))
 
+    def log(self, request, text):
+        """1 dòng trên terminal mỗi khi server xử lý 1 request: server nào, request số mấy, của IP nào."""
+        rid = request.headers.get("X-Request-Id")
+        num = "#%d" % (int(rid) + 1) if rid and rid.isdigit() else "#-"
+        ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote or "?"
+        print("[%s] nhận %-5s %s %-6s từ %-14s %s" % (self.name, num, request.method, request.path, ip, text),
+              flush=True)
+
     async def handle_work(self, request):
         recv = time.perf_counter()
         try:
@@ -76,6 +84,8 @@ class Worker:
         fut = asyncio.get_running_loop().create_future()
         self.queue.put_nowait((fut, base_ms * self.slow_factor / 1000.0))
         start, end = await fut
+        kind = "nặng" if request.headers.get("X-Request-Kind") == "heavy" else "nhẹ"
+        self.log(request, "%-4s chờ %7.1f ms  xử lý %6.1f ms" % (kind, (start - recv) * 1000, (end - start) * 1000))
         return web.json_response({
             "server": self.name,
             "port": self.port,
@@ -86,6 +96,7 @@ class Worker:
 
     async def handle_index(self, request):
         # Mở LB trên trình duyệt (http://127.0.0.1:8080) rồi F5 để thấy request được chia cho server nào
+        self.log(request, "(trình duyệt)")
         return web.Response(text="Web Server %s (cổng %d, hệ số chậm ×%g) đã xử lý request này.\n"
                                  "Gửi request có tải: GET /work với header X-Work-Ms.\n"
                                  % (self.name, self.port, self.slow_factor))

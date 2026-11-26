@@ -177,6 +177,45 @@ class PanelBase {
     this.drawDot(x0 + (b.cx - x0) * ease, y0 + (b.y - 4 - y0) * ease, req, stickyIp);
   }
 
+  // Đường bay của chấm (khi tua lại): nét đứt mờ = cả đường LB → server, vệt sáng = đoạn chấm vừa đi qua
+  drawTrail(server, p) {
+    const b = this.boxes[server];
+    if (!b) return;
+    const ctx = this.ctx;
+    const x0 = GATE.x + GATE.w / 2;
+    const y0 = GATE.y + GATE.h;
+    const x1 = b.cx;
+    const y1 = b.y - 4;
+    const at = (q) => {
+      const e = 1 - Math.pow(1 - q, 2);
+      return [x0 + (x1 - x0) * e, y0 + (y1 - y0) * e];
+    };
+    ctx.save();
+    ctx.strokeStyle = this.color;
+    ctx.lineCap = "round";
+    ctx.globalAlpha = 0.25;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const [ax, ay] = at(Math.max(0, p - 0.4));
+    const [bx, by] = at(p);
+    const grad = ctx.createLinearGradient(ax, ay, bx, by);
+    grad.addColorStop(0, "rgba(255,255,255,0)");
+    grad.addColorStop(1, this.color);
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   // Chấm trắng = nhẹ, cam = nặng, viền tím = sticky client
   drawDot(x, y, req, stickyIp, radius) {
     const ctx = this.ctx;
@@ -192,6 +231,21 @@ class PanelBase {
     }
   }
 }
+
+// Đổi thời điểm của sự kiện (đồng hồ backend, ms) sang đồng hồ trình duyệt (performance.now) để phát lại
+// đúng khoảng cách thật giữa các request. offset = độ lệch nhỏ nhất đã thấy giữa lúc nhận và lúc xảy ra;
+// cộng thêm BUFFER để request cuối của mỗi lô (đẩy mỗi 0,1 giây) vẫn kịp hiện đúng giờ.
+const LiveClock = {
+  BUFFER: 160,
+  offset: null,
+  toLocal(t, now) {
+    if (t == null) return now; // backend cũ không gửi thời điểm
+    const o = now - t;
+    if (this.offset === null || o < this.offset || o > this.offset + 5000) this.offset = o; // >5 s: backend vừa chạy lại
+    const at = t + this.offset + this.BUFFER;
+    return at < now - 1000 ? now : at;
+  },
+};
 
 // 1 sơ đồ thuật toán trên trang Tổng quan, cập nhật theo thời gian thực từ WebSocket.
 // Sơ đồ của thuật toán đang chạy vẽ bằng số liệu LB thật, 3 sơ đồ còn lại vẽ bằng cụm server ảo
@@ -212,24 +266,160 @@ class AlgoPanel extends PanelBase {
     this.nameEl.after(this.tagsEl);
     this.foot = document.createElement("div");
     this.foot.className = "sim-foot";
-    this.foot.innerHTML = '<span class="sim-wait"></span>' +
-      '<button type="button" class="btn-primary btn-switch" hidden></button>';
+    this.foot.innerHTML = '<span class="sim-wait"></span>';
     this.waitEl = this.foot.querySelector(".sim-wait");
-    this.switchBtn = this.foot.querySelector(".btn-switch");
-    this.switchBtn.dataset.algo = algo.key;
     this.el.appendChild(this.foot); // dưới canvas: 4 sơ đồ luôn thẳng hàng dù có nút hay không
+
+    // Sơ đồ bên trái, bảng IP request bên phải
+    this.body = document.createElement("div");
+    this.body.className = "sim-body";
+    this.canvas.before(this.body);
+    this.body.appendChild(this.canvas);
+    this.ipTable = new IpTable(this.body, slowFactors.length);
   }
 
   // Số server hoặc hệ số chậm thay đổi (admin chỉnh cụm server): tính lại vị trí các ô
   setFactors(factors) {
     if (factors.join() === this.factors.join()) return;
+    if (factors.length !== this.factors.length) this.ipTable.build(factors.length);
     this.factors = factors.slice();
     this.computeLayout();
   }
 
+  // Sự kiện tới theo lô (mỗi 0,1 giây). Mỗi request được hẹn giờ hiện theo thời điểm thật của nó (LiveClock),
+  // nên các chấm bay lần lượt đúng thứ tự LB đã chia, không bay cùng lúc cả lô.
   addEvent(e, now) {
-    if (e.e === "a") this.inflight.set(e.id, { s: e.s, kind: e.k, client_ip: e.ip, at: now });
-    else this.inflight.delete(e.id);
+    const at = LiveClock.toLocal(e.t, now);
+    if (e.e === "a") {
+      this.inflight.set(e.id, { s: e.s, kind: e.k, client_ip: e.ip, at: at, end: null, ok: true, listed: false, ev: e });
+    } else {
+      const r = this.inflight.get(e.id);
+      if (!r) return;
+      r.end = Math.max(at, r.at);
+      r.ok = e.ok !== false;
+    }
+  }
+
+  // Tới giờ thì hiện IP trên bảng (lúc chấm bắt đầu bay) / đánh dấu xong; request xong thì bỏ khỏi sơ đồ
+  flushLive(now) {
+    for (const [id, r] of this.inflight) {
+      if (!r.listed && now >= r.at) {
+        r.listed = true;
+        // Đang tua lại: bảng IP do Player vẽ theo thời điểm đang xem, không thêm dòng trực tiếp
+        if (!this.replaying) this.ipTable.add(r.ev, this.stickyIp);
+      }
+      if (r.end !== null && now >= r.end) {
+        if (!this.replaying) this.ipTable.finish(id, r.ok);
+        this.inflight.delete(id);
+      }
+    }
+  }
+
+  // Lượt gửi mới: xóa chấm và bảng IP của lượt trước
+  clearRequests() {
+    this.inflight.clear();
+    this.ipTable.clear();
+    this.resetReplayCache();
+  }
+
+  // ---------- Tua lại (Player trong replay.js điều khiển) ----------
+
+  beginReplay() {
+    this.replaying = true;
+    this.resetReplayCache();
+  }
+
+  // Về trực tiếp: dựng lại bảng IP theo các request đã ghi rồi tiếp tục thêm dòng trực tiếp
+  endReplay() {
+    this.replaying = false;
+    this.resetReplayCache();
+    // Bảng dựng lại từ bản ghi đã gồm mọi request đang chờ hiện: không thêm lại lần nữa
+    for (const r of this.inflight.values()) r.listed = true;
+    if (!Recorder.hasData()) {
+      this.ipTable.clear();
+      return;
+    }
+    const v = Recorder.view(this.key, Recorder.tLast, this.ipTable.cols.length);
+    this.ipTable.render(v.rows, v.recv, Recorder.tLast, null, this.stickyIp);
+  }
+
+  resetReplayCache() {
+    this.ipKey = null;
+    this.ipVt = null;
+  }
+
+  // Vẽ trạng thái tại thời điểm ảo vt (ms, cùng đồng hồ với sự kiện backend)
+  // opts (từng request một): {flyV: 0, focusId, focusP} — chỉ request focusId bay, tiến độ focusP
+  drawAt(vt, trail, opts) {
+    const n = Math.min(this.servers.length, this.boxes.length);
+    const v = Recorder.view(this.key, vt, n, opts);
+    this.replayDone = v.doneTotal; // nhãn "xong" dưới sơ đồ theo thời điểm đang xem
+    this.drawGate();
+    for (let i = 0; i < n; i++) {
+      const s = this.servers[i];
+      const status = s.enabled === false ? "off" : s.up === false;
+      this.drawServer(i, v.open[i], v.done[i], v.queues[i], this.threshold, this.stickyIp, status);
+    }
+    if (v.focusServer !== null && v.focusServer < n) this.drawTarget(v.focusServer);
+    if (trail) for (const f of v.flying) this.drawTrail(f.s, f.p);
+    for (const f of v.flying) {
+      this.drawFlying(f.s, f.p, f, this.stickyIp);
+      if (f.focus) this.drawFocusLabel(f);
+    }
+
+    // Bảng IP chỉ dựng lại khi có request mới tới / xong (không phải mỗi khung hình)
+    const focusId = opts ? opts.focusId : null;
+    const key = v.end + "|" + v.doneTotal + "|" + n + "|" + focusId + "|" + v.recv.join(",");
+    if (key !== this.ipKey) {
+      // Tua tới từng chút (đang phát) thì dòng mới nháy sáng; nhảy xa (kéo thanh) thì không
+      const fresh = this.ipVt !== null && vt > this.ipVt && vt - this.ipVt < 1000 ? this.ipVt : null;
+      this.ipTable.render(v.rows, v.recv, vt, fresh, this.stickyIp, focusId);
+      this.ipKey = key;
+      this.ipVt = vt;
+    }
+  }
+
+  // Viền sáng quanh server mà request đang chiếu được chia tới
+  drawTarget(i) {
+    const b = this.boxes[i];
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = this.color;
+    ctx.shadowBlur = 12;
+    roundRect(ctx, b.x - 4, b.y - 4, b.w + 8, b.h + 8, 10);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Nhãn "#số · IP" đi theo chấm đang bay (từng request một)
+  drawFocusLabel(f) {
+    const b = this.boxes[f.s];
+    if (!b) return;
+    const ease = 1 - Math.pow(1 - f.p, 2);
+    const x0 = GATE.x + GATE.w / 2;
+    const y0 = GATE.y + GATE.h;
+    const x = x0 + (b.cx - x0) * ease;
+    const y = y0 + (b.y - 4 - y0) * ease;
+    const ctx = this.ctx;
+    const text = "#" + f.n + " · " + f.client_ip;
+    ctx.font = "600 11px ui-monospace, Menlo, monospace";
+    const w = ctx.measureText(text).width + 10;
+    // Đặt nhãn phía ngoài đường bay để không che chấm
+    const left = b.cx < x0;
+    const lx = Math.max(2, Math.min(CANVAS_W - w - 2, left ? x - w - 10 : x + 10));
+    const ly = y - 9;
+    ctx.fillStyle = "rgba(17, 18, 20, 0.88)";
+    ctx.strokeStyle = this.color;
+    ctx.lineWidth = 1;
+    roundRect(ctx, lx, ly, w, 18, 5);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = f.client_ip === this.stickyIp ? cssVar("--sticky") : cssVar("--text");
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(text, lx + 5, ly + 9);
   }
 
   // Phòng mất sự kiện "f" (VD: tab bị ẩn lâu): bỏ request treo quá 2 phút
@@ -239,10 +429,12 @@ class AlgoPanel extends PanelBase {
 
   draw() {
     const now = performance.now();
+    this.flushLive(now);
     this.drawGate();
     const queues = this.servers.map(() => []);
     const flying = [];
     for (const r of this.inflight.values()) {
+      if (now < r.at) continue; // chưa tới lượt request này
       if (now - r.at < this.FLY_MS) flying.push(r);
       else if (queues[r.s]) queues[r.s].push(r);
     }
@@ -256,6 +448,118 @@ class AlgoPanel extends PanelBase {
     for (const r of flying) {
       if (r.s < n) this.drawFlying(r.s, (now - r.at) / this.FLY_MS, r, this.stickyIp);
     }
+  }
+}
+
+// Bảng IP bên cạnh 1 sơ đồ thuật toán: mỗi cột là 1 server, mỗi dòng là 1 request thật vừa được
+// Load Balancer (hoặc cụm ảo) chia cho server đó: IP client + số thứ tự request.
+// Dòng mới nhất ở trên cùng, sáng khi request đang chờ / đang xử lý, mờ khi đã xong.
+const IP_ROWS = 10; // số dòng giữ lại mỗi server
+
+class IpTable {
+  constructor(container, numServers) {
+    this.el = document.createElement("div");
+    this.el.className = "ip-table";
+    container.appendChild(this.el);
+    this.build(numServers);
+  }
+
+  build(n) {
+    this.items = new Map(); // id request -> dòng (chỉ request chưa xong)
+    this.el.innerHTML = '<div class="ip-cols"></div>';
+    const wrap = this.el.querySelector(".ip-cols");
+    // 5–6 server: cột bên cạnh sơ đồ quá hẹp cho IP đầy đủ, chuyển bảng xuống dưới sơ đồ
+    this.el.parentElement.classList.toggle("stack", n >= 5);
+    wrap.style.gridTemplateColumns = "repeat(" + n + ", minmax(0, 1fr))";
+    this.cols = [];
+    for (let i = 0; i < n; i++) {
+      const col = document.createElement("div");
+      col.className = "ip-col";
+      col.innerHTML = '<div class="ip-head"><span>s' + i + '</span><span class="ip-count" title="Số request đã nhận">0</span></div>' +
+        '<ol class="ip-list"></ol>';
+      wrap.appendChild(col);
+      this.cols.push({ el: col, list: col.querySelector(".ip-list"), countEl: col.querySelector(".ip-count"), count: 0 });
+    }
+  }
+
+  makeItem(id, n, s, kind, ip, stickyIp) {
+    const sticky = stickyIp && ip === stickyIp;
+    const li = document.createElement("li");
+    li.className = "ip-item " + (kind === "heavy" ? "heavy" : "light") + (sticky ? " sticky" : "");
+    li.dataset.id = id;
+    li.title = "Request #" + n + " · " + ip + " · " + (kind === "heavy" ? "nặng" : "nhẹ") +
+      (sticky ? " · sticky client" : "") + " → s" + s;
+    const dot = document.createElement("span");
+    dot.className = "ip-dot";
+    const addr = document.createElement("span");
+    addr.className = "ip-addr";
+    addr.textContent = ip;
+    const num = document.createElement("span");
+    num.className = "ip-num";
+    num.textContent = "#" + n;
+    li.append(dot, addr, num);
+    return li;
+  }
+
+  // Dựng lại cả bảng theo trạng thái tại thời điểm vt (khi tua lại / về trực tiếp).
+  // rows[i]: request mới nhất trước của server i; freshAfter: request đến sau mốc này thì nháy sáng.
+  render(rows, recv, vt, freshAfter, stickyIp, focusId) {
+    this.items = new Map();
+    this.cols.forEach((c, i) => {
+      const frag = document.createDocumentFragment();
+      for (const r of rows[i] || []) {
+        const li = this.makeItem(r.id, r.n, r.s, r.k, r.ip, stickyIp);
+        if (r.tf !== null && r.tf <= vt) li.classList.add(r.ok ? "done" : "err");
+        else this.items.set(r.id, li);
+        if (freshAfter !== null && r.ta > freshAfter) li.classList.add("fresh");
+        if (focusId != null && r.id === focusId) li.classList.add("current");
+        frag.appendChild(li);
+      }
+      c.list.replaceChildren(frag);
+      c.count = recv[i] || 0;
+      c.countEl.textContent = c.count;
+    });
+  }
+
+  add(e, stickyIp) {
+    const c = this.cols[e.s];
+    if (!c) return;
+    const li = this.makeItem(e.id, e.n != null ? e.n : e.id, e.s, e.k, e.ip, stickyIp);
+    li.classList.add("fresh");
+    c.list.prepend(li);
+    this.items.set(e.id, li);
+    while (c.list.children.length > IP_ROWS) {
+      const last = c.list.lastElementChild;
+      this.items.delete(Number(last.dataset.id));
+      last.remove();
+    }
+    c.count++;
+    c.countEl.textContent = c.count;
+  }
+
+  finish(id, ok) {
+    const li = this.items.get(id);
+    if (!li) return;
+    li.classList.add(ok === false ? "err" : "done");
+    this.items.delete(id);
+  }
+
+  // servers: [{enabled, up}] — cột của server đang tắt / mất kết nối vẽ mờ
+  setServers(servers) {
+    this.cols.forEach((c, i) => {
+      const s = servers[i];
+      c.el.classList.toggle("off", !!s && s.enabled === false);
+      c.el.classList.toggle("down", !!s && s.enabled !== false && s.up === false);
+    });
+  }
+
+  clear() {
+    this.items.clear();
+    this.cols.forEach((c) => {
+      c.list.innerHTML = "";
+      c.count = 0;
+      c.countEl.textContent = "0";
+    });
   }
 }
 

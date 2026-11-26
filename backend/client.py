@@ -25,7 +25,22 @@ from backend.config import DEFAULT_PARAMS, LB_URL
 from backend.generator import generate_requests
 
 
-async def send_all(lb_url, requests, run_id):
+def log_line(r, ok, server, status, total_ms, body):
+    """1 dòng kết quả của 1 request: số thứ tự, thời điểm gửi, IP, loại, server xử lý, thời gian."""
+    kind = "nặng" if r["kind"] == "heavy" else "nhẹ"
+    if not ok:
+        return "#%-4d t=%7.1f ms  GET /work  %-14s %-4s → %-4s LỖI %s" % (
+            r["id"] + 1, r["arrival_time"], r["client_ip"], kind, server, status)
+    try:
+        info = json.loads(body)
+        detail = "chờ %7.1f ms  xử lý %6.1f ms" % (info["wait_ms"], info["service_ms"])
+    except (ValueError, KeyError, TypeError):
+        detail = ""
+    return "#%-4d t=%7.1f ms  GET /work  %-14s %-4s → %-4s HTTP %s  phản hồi %7.1f ms  (%s)" % (
+        r["id"] + 1, r["arrival_time"], r["client_ip"], kind, server, status, total_ms, detail)
+
+
+async def send_all(lb_url, requests, run_id, verbose=True):
     loop = asyncio.get_running_loop()
     results = []
 
@@ -44,15 +59,19 @@ async def send_all(lb_url, requests, run_id):
             if run_id is not None:
                 headers["X-Run-Id"] = str(run_id)
             sent = time.perf_counter()
+            body = b""
             try:
                 async with session.get(lb_url + "/work", headers=headers) as resp:
-                    await resp.read()
+                    body = await resp.read()
                     ok = resp.status == 200
+                    status = resp.status
                     server = resp.headers.get("X-Upstream-Server", "?")
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                ok, server = False, "lỗi: %s" % exc
-            results.append({"id": r["id"], "ok": ok, "server": server,
-                            "ms": (time.perf_counter() - sent) * 1000.0})
+                ok, server, status = False, "?", "(%s)" % exc
+            ms = (time.perf_counter() - sent) * 1000.0
+            results.append({"id": r["id"], "ok": ok, "server": server, "ms": ms})
+            if verbose:
+                print(log_line(r, ok, server, status, ms, body), flush=True)
 
         await asyncio.gather(*(one(r) for r in requests))
     return results
@@ -65,6 +84,7 @@ def main():
     ap.add_argument("--params-json", default=None, help="Tham số dạng JSON (ghi đè mặc định)")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--num-requests", type=int, default=None)
+    ap.add_argument("--quiet", action="store_true", help="Không in kết quả từng request, chỉ in tổng kết")
     args = ap.parse_args()
 
     params = dict(DEFAULT_PARAMS)
@@ -78,7 +98,8 @@ def main():
     requests = generate_requests(params)
     print("Gửi %d request tới %s (seed %s, ~%s req/s)..." % (
         len(requests), args.lb, params["seed"], params["arrival_rate"]), flush=True)
-    results = asyncio.run(send_all(args.lb.rstrip("/"), requests, args.run_id))
+    results = asyncio.run(send_all(args.lb.rstrip("/"), requests, args.run_id, verbose=not args.quiet))
+    print()
 
     ok = [r for r in results if r["ok"]]
     print("Thành công %d/%d, lỗi %d" % (len(ok), len(results), len(results) - len(ok)))

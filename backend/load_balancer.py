@@ -28,7 +28,7 @@ from aiohttp import web
 
 from backend import advisor, db
 from backend.algorithms import ALGORITHMS, Scheduled, make_algorithm
-from backend.config import (API_VERSION, CLUSTER, HEALTH_INTERVAL, MAX_SERVERS, MIN_SERVERS, PUSH_INTERVAL, SERVER_HOST,
+from backend.config import (CLUSTER, HEALTH_INTERVAL, MAX_SERVERS, MIN_SERVERS, PUSH_INTERVAL, SERVER_HOST,
                             SLOW_FACTOR_CHOICES, server_port)
 from backend.generator import generate_requests
 from backend.history import History
@@ -195,6 +195,7 @@ class LoadBalancer:
         self.algorithm = algorithm
         self.algo_key = key
         self.history.start_segment(key, source)
+        print("Load Balancer chuyển sang %s" % ALGO_NAMES[key], flush=True)
         self.switches.appendleft({"at": datetime.now().strftime("%H:%M:%S"), "from": old, "to": key})
         run = self.run
         if run and run.status == "running":
@@ -310,6 +311,7 @@ class LoadBalancer:
         self.reset_counters()
         self.history.clear(algorithm, "run")  # mỗi lượt gửi có lịch sử riêng, bắt đầu lại từ giai đoạn 1
         self.run = Run(run_id, algorithm, params)
+        print("\n=== Lượt gửi #%d: Load Balancer dùng %s ===" % (run_id, ALGO_NAMES[algorithm]), flush=True)
         # Phần so sánh 4 thuật toán + 4 sơ đồ bắt đầu lại từ đầu cho lượt gửi mới
         self.trace.clear()
         self.trace_seq += 1
@@ -329,7 +331,6 @@ class LoadBalancer:
 
     def state(self):
         return {
-            "api": API_VERSION,
             "algorithm": self.algo_key,
             "algorithm_name": ALGO_NAMES[self.algo_key],
             "algorithms": [{"key": c.key, "name": c.name} for c in ALGORITHMS],
@@ -364,12 +365,15 @@ class LoadBalancer:
         gid = self.seq
         self.total += 1
         algo_key = self.algo_key
-        self.emit({"e": "a", "id": gid, "s": idx, "k": kind, "ip": client_ip, "g": algo_key})
+        # Số thứ tự hiện trên bảng IP: trong lượt gửi là số request của lượt (1..N), ngoài lượt là id toàn cục
+        num = req_id + 1 if run else gid
+        self.emit({"e": "a", "id": gid, "n": num, "s": idx, "k": kind, "ip": client_ip, "g": algo_key,
+                   "t": round(now * 1000.0, 1)})
         try:
             declared = float(request.headers["X-Work-Ms"])
         except (KeyError, ValueError):
             declared = None
-        self.shadows.on_request(now * 1000.0, gid, declared, client_ip, kind, algo_key, self.emit)
+        self.shadows.on_request(now * 1000.0, gid, declared, client_ip, kind, algo_key, self.emit, num)
         rec = {"t": now, "ip": client_ip, "base": declared, "kind": kind, "wait": None}
         self.add_trace(rec, now)
         if run:
@@ -404,7 +408,7 @@ class LoadBalancer:
         else:
             server.errors += 1
             self.total_errors += 1
-        self.emit({"e": "f", "id": gid, "s": idx, "ok": ok, "g": algo_key})
+        self.emit({"e": "f", "id": gid, "s": idx, "ok": ok, "g": algo_key, "t": round(end * 1000.0, 1)})
         service = parse_service(resp_body) if ok else None
         if rec["base"] is None:
             # Không khai báo thời gian xử lý: lấy thời gian server đo được, quy về server chuẩn (×1)
@@ -494,9 +498,18 @@ class LoadBalancer:
         """Đợi tiến trình client kết thúc. Client chỉ thoát sau khi nhận đủ phản hồi,
         nên nếu lúc đó lượt chạy chưa xong nghĩa là client bị lỗi giữa chừng."""
         run.process = process
-        out, _ = await process.communicate()
+        # In kết quả từng request (IP, server, thời gian) ra terminal đang chạy run.py, giữ 3 dòng cuối để báo lỗi
+        tail = deque(maxlen=3)
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").rstrip()
+            print(text, flush=True)
+            if text:
+                tail.append(text)
+        await process.wait()
         if run.status == "running":
-            tail = out.decode("utf-8", "replace").strip().splitlines()[-3:] if out else []
             msg = "Client thoát (mã %s)" % process.returncode
             if tail:
                 msg += ": " + " | ".join(tail)

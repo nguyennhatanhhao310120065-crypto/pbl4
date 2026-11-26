@@ -106,6 +106,7 @@ def analyze(trace, current, real, factors=None, names=None):
         "rows": rows,
         "real": real,
         "slow_servers": [names[i] for i in slow],
+        "server_names": list(names),
     }
 
 

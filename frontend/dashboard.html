@@ -16,20 +16,12 @@
 </header>
 
 <main>
-  <!-- Backend đang chạy bản cũ (chưa chạy lại python run.py sau khi cập nhật code) -->
-  <section class="card warn-banner" id="version-warn" role="alert" hidden>
-    <b>Backend đang chạy bản cũ.</b> Trang này đã được cập nhật nhưng chương trình Load Balancer chưa được chạy lại,
-    nên một số phần (lịch sử, chỉnh server…) sẽ không hoạt động. Ở terminal, nhấn <code>Ctrl+C</code> rồi chạy lại
-    <code>python run.py</code>, sau đó tải lại trang.
-  </section>
-
-  <!-- 1. Điều khiển: chọn thuật toán bằng tay + gửi request -->
+  <!-- 1. Điều khiển: gửi request -->
   <section class="card control-bar">
     <div class="control-main">
-      <label class="inline">Thuật toán đang chạy
+      <label class="inline">Thuật toán Load Balancer
         <select id="algo-select"></select>
       </label>
-      <button type="button" id="btn-algo" class="btn-primary">Áp dụng</button>
       <button type="button" id="btn-reset-counters" class="btn-ghost">Đặt lại bộ đếm</button>
       <span id="lb-status" class="status" role="status"></span>
     </div>
@@ -99,30 +91,36 @@
     <p class="hint-inline mono" id="lb-url"></p>
   </section>
 
-  <!-- 2. Đánh giá & đề xuất (mô phỏng trên traffic thật) -->
+  <!-- 2. Nhận xét thuật toán: thuật toán tối ưu nhất + thông số 4 thuật toán (mô phỏng trên request thật) -->
   <section class="card advisor" id="advisor" data-level="idle">
-    <div class="advisor-tag" id="adv-tag">Đánh giá &amp; đề xuất</div>
-    <h2 id="adv-title">Đang chờ traffic…</h2>
-    <p class="advisor-sub" id="adv-sub">Hệ thống mô phỏng 4 thuật toán trên chính các request thật vừa đi qua Load Balancer
-      của lượt gửi gần nhất (cập nhật mỗi 2 giây) và đề xuất thuật toán phù hợp nhất.</p>
-    <p class="advisor-live" id="adv-live"></p>
+    <h2 id="adv-title">Nhận xét thuật toán</h2>
+    <p class="hint-inline" id="adv-empty">Chưa đủ dữ liệu (cần ít nhất 20 request).</p>
+    <div class="table-wrap" id="adv-table-wrap" hidden><table id="adv-table"></table></div>
   </section>
 
   <!-- 3. 4 sơ đồ thuật toán cùng lúc -->
   <section class="card">
     <h2>4 thuật toán cùng lúc</h2>
-    <p class="hint">Mỗi request đi qua Load Balancer được đưa vào cả 4 sơ đồ. Sơ đồ <b>đang chạy</b> là số liệu thật
-      của Load Balancer, 3 sơ đồ còn lại là mô phỏng trực tiếp trên cùng luồng request.</p>
-    <ul class="legend mark-legend">
-      <li><span class="mark-sample mark-current"></span>Viền đậm, nhãn <b>ĐANG CHẠY</b>: thuật toán Load Balancer đang dùng</li>
-      <li><span class="mark-sample mark-best"></span>Viền xanh phát sáng, nhãn <b>TỐI ƯU NHẤT</b>: thuật toán nên chọn</li>
-    </ul>
+    <div class="replay-bar" id="replay-bar" data-mode="live">
+      <button type="button" class="btn-sm btn-ghost" id="rp-live">● Trực tiếp</button>
+      <div class="rp-modes" id="rp-modes" role="group" aria-label="Cách xem">
+        <button type="button" class="btn-sm rp-mode" data-mode="time" title="Request bay đúng nhịp thật (nhiều request cùng lúc)">Theo thời gian</button>
+        <button type="button" class="btn-sm rp-mode" data-mode="step" title="Mỗi lần chỉ 1 request đi từ Load Balancer xuống server">Từng request một</button>
+      </div>
+      <button type="button" class="btn-sm btn-ghost" id="rp-restart" title="Tua về request đầu tiên của lượt gửi" aria-label="Tua về đầu">⏮</button>
+      <button type="button" class="btn-sm btn-ghost" id="rp-play" aria-label="Tạm dừng">⏸</button>
+      <button type="button" class="btn-sm btn-ghost" id="rp-next" title="Request kế tiếp" aria-label="Request kế tiếp">⏭</button>
+      <input type="range" id="rp-slider" min="0" max="1000" step="1" value="1000" aria-label="Thời điểm trong lượt gửi">
+      <span class="mono rp-time" id="rp-time">0,000 / 0,000 s</span>
+      <div class="rp-speeds" id="rp-speeds" role="group" aria-label="Tốc độ"></div>
+      <label class="inline rp-trail"><input type="checkbox" id="rp-trail" checked> Vẽ đường bay</label>
+    </div>
     <div id="algo-grid" class="sim-grid algo-grid"></div>
     <div id="legend"></div>
   </section>
 
-  <!-- 4. Lịch sử chuyển thuật toán (số liệu thật) -->
-  <section class="card" id="history">
+  <!-- 4. Lịch sử chuyển thuật toán: ẩn vì không còn đổi thuật toán (giữ code để bật lại khi cần) -->
+  <section class="card" id="history" hidden>
     <div class="section-head">
       <div>
         <h2>Lịch sử chuyển thuật toán</h2>
@@ -149,25 +147,11 @@
     </div>
   </section>
 
-  <!-- 5. Bảng so sánh -->
-  <section class="card">
-    <h2>So sánh 4 thuật toán</h2>
-    <p class="hint">Mô phỏng 4 thuật toán trên đúng các request thật của lượt gửi gần nhất, xếp theo thời gian chờ trung bình.
-      Mỗi lần bấm Bắt đầu gửi, bảng này và 4 sơ đồ bắt đầu lại từ đầu; gửi xong kết quả vẫn được giữ lại.</p>
-    <p class="hint-inline" id="adv-empty">Chưa đủ dữ liệu để so sánh (cần ít nhất 20 request). Bấm Bắt đầu gửi ở trên.</p>
-    <div class="table-wrap" id="adv-table-wrap" hidden>
-      <table id="adv-table"></table>
-    </div>
-    <p class="hint-inline" id="adv-foot"></p>
-  </section>
-
-  <!-- 6. Web Server: chỉnh hệ số chậm, bật / tắt, thêm / bớt server -->
+  <!-- 5. Web Server: chỉnh hệ số chậm, bật / tắt, thêm / bớt server -->
   <section class="card">
     <div class="section-head">
       <div>
         <h2>Web Server</h2>
-        <p class="hint">Chỉnh ngay khi đang chạy: đổi hệ số chậm, bật / tắt từng server. Thêm / bớt server khi không gửi request.
-          Cả 4 sơ đồ và phần đề xuất cập nhật theo cụm server mới.</p>
       </div>
       <div class="server-actions">
         <button type="button" id="btn-add-server" class="btn-ghost">+ Thêm server</button>
@@ -184,6 +168,7 @@
 <script src="/js/common.js"></script>
 <script src="/js/settings.js"></script>
 <script src="/js/simulation.js"></script>
+<script src="/js/replay.js"></script>
 <script src="/js/history.js"></script>
 <script src="/js/dashboard.js"></script>
 </body>

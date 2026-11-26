@@ -88,10 +88,6 @@ SESSION_HOURS = 8
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "lb.db")
 
-# Tăng mỗi khi backend thêm dữ liệu mà trang admin cần. Trang so với số của nó để báo
-# "backend đang chạy bản cũ, hãy chạy lại python run.py" thay vì im lặng thiếu tính năng.
-API_VERSION = 5
-
 HEALTH_INTERVAL = 1.0   # giây, LB kiểm tra sức khỏe server
 PUSH_INTERVAL = 0.1     # giây, LB đẩy trạng thái lên trang admin qua WebSocket
 
