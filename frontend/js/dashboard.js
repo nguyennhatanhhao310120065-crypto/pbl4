@@ -1,4 +1,4 @@
-// Trang admin (1 trang duy nhất): chọn thuật toán, gửi request, đánh giá & đề xuất,
+// Trang admin (1 trang duy nhất): chọn thuật toán, đánh giá & đề xuất,
 // 4 sơ đồ thuật toán cùng lúc, bảng so sánh, bảng Web Server.
 
 const THRESHOLD_DEFAULT = 5;
@@ -8,11 +8,6 @@ const panels = {};              // key thuật toán -> AlgoPanel
 
 function threshold(state) {
   return state.run ? state.run.overload_threshold : THRESHOLD_DEFAULT;
-}
-
-function algoName(state, key) {
-  const a = state.algorithms.find((x) => x.key === key);
-  return a ? a.name : key;
 }
 
 function runBusy(state) {
@@ -31,20 +26,7 @@ function renderControl(state) {
   document.getElementById("st-total").textContent = state.total;
   document.getElementById("st-errors").textContent = state.errors;
   document.getElementById("st-open").textContent = state.servers.reduce((a, s) => a + s.open, 0);
-
-  const run = state.run;
-  const running = !!(run && run.status === "running");
-  document.getElementById("st-run").textContent = running ? run.completed + " / " + run.total
-    : run && run.status === "saving" ? "Đang lưu…" : "Không";
-  const progress = document.getElementById("progress");
-  progress.hidden = !running;
-  if (running) document.getElementById("progress-bar").style.width = (100 * run.completed / run.total) + "%";
-
-  const busy = runBusy(state);
-  const runStatus = document.getElementById("run-status");
-  if (!busy && runStatus.textContent.startsWith("Đang gửi")) runStatus.textContent = "";
-  document.getElementById("btn-reset-counters").disabled = busy;
-  document.getElementById("btn-start").disabled = busy;
+  document.getElementById("btn-reset-counters").disabled = runBusy(state);
 }
 
 // Đổi thuật toán của Load Balancer thật (chỉ khi không gửi): request sau đó được chia theo thuật toán này
@@ -57,17 +39,6 @@ async function applyAlgorithm(key) {
   } catch (err) {
     setStatus(status, "Lỗi: " + err.message, true);
     document.getElementById("algo-select").value = lastState.algorithm;
-  }
-}
-
-async function startRun() {
-  const status = document.getElementById("run-status");
-  const params = Settings.read();
-  try {
-    const res = await Api.post("/api/runs", { algorithm: document.getElementById("algo-select").value, params: params });
-    setStatus(status, "Đang gửi " + res.run.total + " request bằng " + algoName(lastState, res.run.algorithm) + "…");
-  } catch (err) {
-    setStatus(status, "Lỗi: " + err.message, true);
   }
 }
 
@@ -321,7 +292,6 @@ function onMessage(msg) {
 document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("legend").innerHTML = legendHtml();
 
-  document.getElementById("btn-start").addEventListener("click", startRun);
   document.getElementById("algo-select").addEventListener("change", (ev) => applyAlgorithm(ev.target.value));
   document.getElementById("btn-reset-counters").addEventListener("click", async () => {
     try {
@@ -360,7 +330,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   const defaults = await Api.get("/api/defaults");
-  Settings.init(defaults.defaults);
   document.getElementById("lb-url").textContent = "Load Balancer nhận traffic tại " + defaults.cluster.lb_url +
     (defaults.cluster.lan_url ? " · máy khác cùng mạng Wi-Fi: " + defaults.cluster.lan_url : "");
 

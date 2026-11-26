@@ -100,39 +100,6 @@ button, .btn-ghost, .btn-primary {
 .btn-ghost:hover { border-color: var(--text-muted); }
 button:disabled { opacity: 0.5; cursor: wait; }
 
-/* ===== Form tham số ===== */
-.presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 14px;
-}
-.presets .label { color: var(--text-2); }
-
-#param-form {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-}
-fieldset {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 14px 14px;
-  margin: 0;
-  display: grid;
-  gap: 10px;
-  align-content: start;
-}
-legend { color: var(--text-2); padding: 0 6px; font-weight: 600; }
-
-#param-form label {
-  display: grid;
-  grid-template-columns: 1fr 140px;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.92rem;
-}
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 
 input, select {
@@ -252,11 +219,7 @@ th .sub { display: block; font-weight: 400; color: var(--text-muted); font-size:
 
 /* ===== Màn hình hẹp ===== */
 @media (max-width: 960px) {
-  #param-form { grid-template-columns: 1fr; }
   .sim-grid { grid-template-columns: 1fr; }
-}
-@media (max-width: 520px) {
-  #param-form label { grid-template-columns: 1fr 120px; }
 }
 
 /* ===== Trang admin ===== */
@@ -324,15 +287,6 @@ td.empty { text-align: center; color: var(--text-muted); padding: 18px; }
 
 .live-box { max-width: 760px; margin: 0 auto; }
 
-.progress {
-  height: 8px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  overflow: hidden;
-  margin-top: 12px;
-}
-.progress-bar { height: 100%; width: 0; background: var(--ok); transition: width 0.15s; }
 
 /* Đăng nhập */
 .login-page {
@@ -422,22 +376,9 @@ td.bar-col, th.bar-col { text-align: left; min-width: 220px; }
 /* ===== Tổng quan: khung trực tiếp ===== */
 .mt { margin-top: 20px; }
 .topbar .badge { white-space: nowrap; }
-.quick-run {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.quick-run .label { color: var(--text-2); font-weight: 600; }
-.quick-run input { width: 110px; }
 
 /* ===== Trang duy nhất: thanh trên, tham số gửi ===== */
 .topbar-spacer { flex: 1; }
-details.params { border-top: 1px solid var(--border); padding-top: 10px; }
-details.params summary { cursor: pointer; color: var(--text-2); font-weight: 600; margin-bottom: 10px; }
-details.params fieldset .btn-ghost { margin-top: 6px; }
 
 /* ===== 4 sơ đồ thuật toán ===== */
 .algo-grid .sim-panel {

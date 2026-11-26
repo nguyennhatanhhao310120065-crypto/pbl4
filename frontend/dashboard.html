@@ -16,7 +16,7 @@
 </header>
 
 <main>
-  <!-- 1. Điều khiển: gửi request -->
+  <!-- 1. Điều khiển: chọn thuật toán (request do máy client gửi tới, trang này chỉ theo dõi) -->
   <section class="card control-bar">
     <div class="control-main">
       <label class="inline">Thuật toán Load Balancer
@@ -29,65 +29,8 @@
       <div class="stat"><span class="k">Tổng request</span><span class="v" id="st-total">0</span></div>
       <div class="stat"><span class="k">Lỗi</span><span class="v" id="st-errors">0</span></div>
       <div class="stat"><span class="k">Kết nối đang mở</span><span class="v" id="st-open">0</span></div>
-      <div class="stat"><span class="k">Đang gửi</span><span class="v" id="st-run">Không</span></div>
     </div>
 
-    <div class="quick-run">
-      <span class="label">Gửi request:</span>
-      <label class="inline"><input type="number" name="num_requests" form="param-form" min="1" max="20000" step="100"> request</label>
-      <button type="button" id="btn-start" class="btn-primary">Bắt đầu gửi</button>
-      <span id="run-status" class="status" role="status"></span>
-    </div>
-    <div class="progress" id="progress" hidden><div class="progress-bar" id="progress-bar"></div></div>
-
-    <details class="params" open>
-      <summary>Tham số gửi request</summary>
-      <form id="param-form" autocomplete="off">
-        <fieldset>
-          <legend>Request</legend>
-          <label>% request nặng (Heavy %)
-            <input type="number" name="heavy_percent" min="0" max="100" step="1">
-          </label>
-          <label>Nhẹ min / max (ms)
-            <span class="pair">
-              <input type="number" name="light_min" min="0.1" step="0.1">
-              <input type="number" name="light_max" min="0.1" step="0.1">
-            </span>
-          </label>
-          <label>Nặng min / max (ms)
-            <span class="pair">
-              <input type="number" name="heavy_min" min="0.1" step="0.1">
-              <input type="number" name="heavy_max" min="0.1" step="0.1">
-            </span>
-          </label>
-          <label>Tốc độ đến (req/s)
-            <input type="number" name="arrival_rate" min="1" step="1">
-          </label>
-        </fieldset>
-        <fieldset>
-          <legend>Client</legend>
-          <label>% sticky client
-            <input type="number" name="sticky_percent" min="0" max="100" step="1">
-          </label>
-          <label>IP sticky client
-            <input type="text" name="sticky_ip">
-          </label>
-          <label>Số client khác (Clients)
-            <input type="number" name="num_clients" min="1" max="250" step="1">
-          </label>
-          <label>Seed
-            <input type="number" name="seed" min="0" step="1">
-          </label>
-        </fieldset>
-        <fieldset>
-          <legend>Đánh giá</legend>
-          <label>Ngưỡng quá tải (Overload)
-            <input type="number" name="overload_threshold" min="1" step="1" title="Server bị coi là quá tải khi số kết nối mở lớn hơn hoặc bằng ngưỡng này.">
-          </label>
-          <button type="button" id="btn-defaults" class="btn-ghost">Khôi phục mặc định</button>
-        </fieldset>
-      </form>
-    </details>
     <p class="hint-inline mono" id="lb-url"></p>
   </section>
 
@@ -166,7 +109,6 @@
 <footer class="page-footer">Đồ án PBL4 · Hệ thống cân bằng tải</footer>
 
 <script src="/js/common.js"></script>
-<script src="/js/settings.js"></script>
 <script src="/js/simulation.js"></script>
 <script src="/js/replay.js"></script>
 <script src="/js/history.js"></script>

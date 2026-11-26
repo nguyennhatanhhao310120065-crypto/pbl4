@@ -103,7 +103,7 @@ Mỗi terminal in từng request:
 - Web Server: `[s0] nhận #1 của c1 GET /work client 192.168.1.30 qua LB 192.168.1.10 ...`
 
 Lần đầu chạy, macOS hoặc Windows có thể hỏi có cho phép kết nối đến hay không: chọn **Cho phép**.
-Nút **Bắt đầu gửi** trên trang admin vẫn chạy client giả lập 50 IP (`--fake-ips`) theo đề bài.
+Trang admin chỉ để theo dõi và chọn thuật toán, không tự gửi request: request luôn do máy client gửi tới.
 
 ### Chạy từng chương trình riêng
 
